@@ -693,6 +693,46 @@ class EkwingAnswerReaderParserTest {
     }
 
     @Test
+    fun parseJsonExamAnswersSkipsModelScoreItemsWithoutStandardAnswers() {
+        val questions = parseJsonExamAnswers(
+            JSONArray(
+                """
+                [
+                  {
+                    "ok": true,
+                    "data": {
+                      "model_info": {
+                        "model_type": "8",
+                        "ques_list": [
+                          {
+                            "title_text": "",
+                            "user_ans": "student metadata",
+                            "score": "0"
+                          },
+                          {
+                            "title_text": "Placeholder question",
+                            "answer": [],
+                            "user_ans": "student answer"
+                          },
+                          {
+                            "title_text": "Real question",
+                            "answer": ["Real standard answer"]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+                """.trimIndent()
+            )
+        )
+
+        assertEquals(1, questions.size)
+        assertEquals("Real question", questions.single().question)
+        assertEquals("Real standard answer", questions.single().answer)
+    }
+
+    @Test
     fun parseJsonExamAnswersAcceptsResultRootModelScoreInfos() {
         val questions = parseJsonExamAnswers(
             JSONObject(
@@ -928,6 +968,13 @@ class EkwingAnswerReaderParserTest {
         assertEquals(exam.toString(), EkwingAnswerState.taskByPaperKey.getValue("exam:exam-100"))
         assertEquals(emptyMap<String, List<EkwingAnswerSection>>(), EkwingAnswerState.sectionsByPaperKey)
         EkwingAnswerState.clear()
+    }
+
+    @Test
+    fun examStatusTextDisplaysKnownStatusCodes() {
+        assertEquals("已完成", examStatusText("1"))
+        assertEquals("未完成", examStatusText("2"))
+        assertEquals("3", examStatusText("3"))
     }
 
     @Test

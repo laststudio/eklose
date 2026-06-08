@@ -951,8 +951,9 @@ internal fun examAnswerQuestions(scoreInfo: Any?, modelScoreInfos: Any?): List<E
     val modelQuestions = parseJsonExamAnswers(JSONObject().apply {
         put("model_score_infos", normalizeJson(modelScoreInfos) ?: JSONArray())
     })
-    if (modelQuestions.any { it.answer.isNotBlank() }) {
-        return modelQuestions
+    val modelQuestionsWithAnswers = modelQuestions.filter { it.answer.isNotBlank() }
+    if (modelQuestionsWithAnswers.isNotEmpty()) {
+        return modelQuestionsWithAnswers.mapIndexed { index, question -> question.copy(order = "Q${index + 1}") }
     }
     return EkwingAnswerParser.parseExamAnswerQuestions(scoreInfo)
 }
@@ -998,6 +999,8 @@ private fun parseJsonModelInfo(
     if (quesList != null && quesList.length() > 0) {
         return (0 until quesList.length()).mapNotNull { index ->
             val question = quesList.optJSONObject(index) ?: return@mapNotNull null
+            val answers = flattenJsonExamAnswer(question.opt("answer"))
+            if (answers.isEmpty()) return@mapNotNull null
             EkwingAnswerQuestion(
                 order = "Q${index + 1}",
                 question = firstNonBlank(
@@ -1006,7 +1009,7 @@ private fun parseJsonModelInfo(
                     question.optString("title"),
                     question.optString("text"),
                 ) ?: "题目 ${index + 1}",
-                answer = flattenJsonExamAnswer(question.opt("answer")).joinToString("\n"),
+                answer = answers.joinToString("\n"),
             )
         }
     }
@@ -1938,13 +1941,21 @@ private fun JSONObject.toAnswerPaper(index: Int): EkwingAnswerPaper {
         "学习中心考试",
         count?.let { "$it 题" },
         score?.let { "分数 $it" },
-        status?.let { "状态 $it" },
+        status?.let { "状态 ${examStatusText(it)}" },
     )
     return EkwingAnswerPaper(
         key = answerPaperKey(),
         title = title,
         summary = summaryParts.joinToString(" | ").ifBlank { "学习中心考试" },
     )
+}
+
+internal fun examStatusText(status: String): String {
+    return when (status.trim()) {
+        "1" -> "已完成"
+        "2" -> "未完成"
+        else -> status
+    }
 }
 
 private fun JSONObject.answerPaperKey(): String {

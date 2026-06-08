@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -30,7 +31,10 @@ import top.yukonga.miuix.kmp.icon.basic.ArrowRight
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-fun EkloseTopBar(onBack: (() -> Unit)? = null) {
+fun EkloseTopBar(
+    onBack: (() -> Unit)? = null,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
     SmallTopAppBar(
         title = "Eklose",
         color = MiuixTheme.colorScheme.surface,
@@ -47,6 +51,7 @@ fun EkloseTopBar(onBack: (() -> Unit)? = null) {
                 }
             }
         },
+        actions = actions,
     )
 }
 

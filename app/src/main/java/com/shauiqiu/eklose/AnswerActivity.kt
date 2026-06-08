@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -31,6 +32,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,10 +41,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TopAppBar
+import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.basic.ArrowRight
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -167,12 +175,32 @@ private fun AnswerScreen(
         answerSections = loadedSections.toUiAnswerSections()
     }
     val questionCount = answerSections.sumOf { it.questions.size }
+    val topBarTitle = paperTitle.ifBlank { "答案" }
+    val scrollBehavior = MiuixScrollBehavior()
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MiuixTheme.colorScheme.surface,
         topBar = {
-            EkloseTopBar(onBack = onBack)
+            TopAppBar(
+                title = topBarTitle,
+                largeTitle = topBarTitle,
+                subtitle = "$questionCount 道题目",
+                color = MiuixTheme.colorScheme.surface,
+                titleColor = MiuixTheme.colorScheme.onSurface,
+                largeTitleColor = MiuixTheme.colorScheme.onSurface,
+                scrollBehavior = scrollBehavior,
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            imageVector = MiuixIcons.Basic.ArrowRight,
+                            contentDescription = "返回",
+                            modifier = Modifier.graphicsLayer(scaleX = -1f),
+                            tint = MiuixTheme.colorScheme.onSurface,
+                        )
+                    }
+                },
+            )
         },
     ) { innerPadding ->
         Surface(
@@ -184,16 +212,12 @@ private fun AnswerScreen(
             contentColor = MiuixTheme.colorScheme.onSurface,
         ) {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .nestedScroll(scrollBehavior.nestedScrollConnection),
                 contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
-                item {
-                    PageLead(
-                        title = paperTitle.ifBlank { "答案" },
-                        summary = "$questionCount 道题目 · ${paperSummary.ifBlank { "等待读取答案" }}",
-                    )
-                }
                 item {
                     GroupSection(title = "试卷概览") {
                         GroupItem(

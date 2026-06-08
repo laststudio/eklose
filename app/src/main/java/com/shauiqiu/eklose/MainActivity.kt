@@ -59,6 +59,7 @@ import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.icon.extended.Delete
+import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -149,7 +150,21 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
         modifier = Modifier.fillMaxSize(),
         containerColor = MiuixTheme.colorScheme.surface,
         topBar = {
-            EkloseTopBar()
+            EkloseTopBar(
+                actions = {
+                    if (selectedPage == RootPage.Home) {
+                        IconButton(
+                            onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) },
+                        ) {
+                            Icon(
+                                imageVector = MiuixIcons.Settings,
+                                contentDescription = "设置",
+                                tint = MiuixTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                },
+            )
         },
         bottomBar = {
             NavigationBar {
@@ -318,16 +333,6 @@ private fun HomePage() {
                     title = "更新日志",
                     summary = "新增读取页考试来源切换与试卷列表预览。",
                     onClick = { context.startActivity(Intent(context, AnnouncementActivity::class.java)) },
-                )
-            }
-        }
-        item {
-            GroupSection {
-                GroupItem(
-                    title = "设置",
-                    summary = "云端读取参数",
-                    value = "设置",
-                    onClick = { context.startActivity(Intent(context, SettingsActivity::class.java)) },
                 )
             }
         }
