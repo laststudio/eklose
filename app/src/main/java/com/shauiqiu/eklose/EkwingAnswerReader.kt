@@ -317,10 +317,7 @@ class EkwingAnswerReader(private val context: Context) {
             throw RuntimeException("考试成绩读取失败：${error.message}")
         }
         val modelScoreInfos = fetchModelScoreInfos(session, selfId, scoreInfo)
-        val questions = mergeAnswerSources(
-            EkwingAnswerParser.parseExamAnswerQuestions(scoreInfo),
-            EkwingAnswerParser.parseExamAnswerQuestions(modelScoreInfos),
-        ).ifEmpty {
+        val questions = examAnswerQuestions(scoreInfo, modelScoreInfos).ifEmpty {
             EkwingAnswerParser.parseHomeworkAnswerQuestions(
                 JSONObject().apply {
                     put("exam_item", examItem ?: JSONObject.NULL)
@@ -494,10 +491,39 @@ class EkwingAnswerReader(private val context: Context) {
                 payload["self_id"] = firstNonBlank(request.optString("self_id"), selfId).orEmpty()
                 request.optString("model_id").takeIf { it.isNotBlank() }?.let { payload["model_id"] = it }
                 val path = request.optString("path").takeIf { it.isNotBlank() } ?: GET_MODEL_SCORE_PATH
-                postScoreForm(path, payload)
+                JSONObject().apply {
+                    put("ok", true)
+                    put("request", request)
+                    put("path", path)
+                    put("payload", JSONObject(payload))
+                    put("data", getScorePage(path, payload) ?: JSONObject.NULL)
+                }
             }.onSuccess { records.put(it) }
         }
         return records
+    }
+
+    private fun getScorePage(path: String, data: Map<String, String>): Any? {
+        val url = "$EK_BASE_URL$path".withQueryDefaults(data)
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 15_000
+        }
+        return try {
+            val stream = if (connection.responseCode in 200..299) {
+                connection.inputStream
+            } else {
+                connection.errorStream ?: connection.inputStream
+            }
+            val text = stream.use(::readText)
+            if (connection.responseCode !in 200..299) {
+                throw RuntimeException("接口请求失败 ${connection.responseCode}：${text.take(160)}")
+            }
+            parseScoreResponse(text)
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun postScoreForm(path: String, data: Map<String, String>): Any? {
@@ -522,17 +548,21 @@ class EkwingAnswerReader(private val context: Context) {
             if (connection.responseCode !in 200..299) {
                 throw RuntimeException("接口请求失败 ${connection.responseCode}：${text.take(160)}")
             }
-            val body = runCatching { JSONObject(text) }.getOrNull()
-            if (body != null) {
-                if (body.optInt("status", -1) != 0) {
-                    throw RuntimeException(errorMessage(body))
-                }
-                return body.opt("data").takeUnless { it == JSONObject.NULL }
-            }
-            normalizeJson(text)
+            parseScoreResponse(text)
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun parseScoreResponse(text: String): Any? {
+        val body = runCatching { JSONObject(text) }.getOrNull()
+        if (body != null) {
+            if (body.optInt("status", -1) != 0) {
+                throw RuntimeException(errorMessage(body))
+            }
+            return normalizeJson(body.opt("data").takeUnless { it == JSONObject.NULL })
+        }
+        return extractScoreJsonFromText(text) ?: normalizeJson(text)
     }
 
     private fun parseAnswerQuestions(value: Any?): List<EkwingAnswerQuestion> {
@@ -917,6 +947,141 @@ internal object EkwingAnswerParser {
     }
 }
 
+internal fun examAnswerQuestions(scoreInfo: Any?, modelScoreInfos: Any?): List<EkwingAnswerQuestion> {
+    val modelQuestions = parseJsonExamAnswers(JSONObject().apply {
+        put("model_score_infos", normalizeJson(modelScoreInfos) ?: JSONArray())
+    })
+    if (modelQuestions.any { it.answer.isNotBlank() }) {
+        return modelQuestions
+    }
+    return EkwingAnswerParser.parseExamAnswerQuestions(scoreInfo)
+}
+
+internal fun parseJsonExamAnswers(root: Any?): List<EkwingAnswerQuestion> {
+    val questions = mutableListOf<EkwingAnswerQuestion>()
+    extractModelScoreItems(root).forEach { item ->
+        val data = normalizeJson(item.opt("data")) as? JSONObject ?: return@forEach
+        val modelInfo = data.optJSONObject("model_info") ?: return@forEach
+        val modelBaseInfo = data.optJSONObject("model_base_info")
+        questions += parseJsonModelInfo(modelInfo, modelBaseInfo)
+    }
+    return questions.mapIndexed { index, question -> question.copy(order = "Q${index + 1}") }
+}
+
+private fun extractModelScoreItems(root: Any?): List<JSONObject> {
+    return when (val normalized = normalizeJson(root)) {
+        is JSONArray -> normalized.jsonObjects()
+        is JSONObject -> {
+            val wrappedItems = normalized.optJSONArray("model_score_infos")?.jsonObjects().orEmpty()
+            when {
+                wrappedItems.isNotEmpty() -> wrappedItems
+                normalized.optJSONObject("data")?.optJSONObject("model_info") != null -> listOf(normalized)
+                normalized.optJSONObject("model_info") != null -> listOf(JSONObject().apply { put("data", normalized) })
+                else -> emptyList()
+            }
+        }
+        else -> emptyList()
+    }
+}
+
+private fun parseJsonModelInfo(
+    modelInfo: JSONObject,
+    modelBaseInfo: JSONObject?,
+): List<EkwingAnswerQuestion> {
+    val modelName = firstNonBlank(
+        knownModelTypeName(firstNonBlank(modelInfo.optString("model_type"), modelInfo.optString("type"))),
+        titleFromModelBaseInfo(modelBaseInfo),
+        modelInfo.optString("model_type_name"),
+        modelInfo.optString("name"),
+    )
+    val quesList = modelInfo.optJSONArray("ques_list")
+    if (quesList != null && quesList.length() > 0) {
+        return (0 until quesList.length()).mapNotNull { index ->
+            val question = quesList.optJSONObject(index) ?: return@mapNotNull null
+            EkwingAnswerQuestion(
+                order = "Q${index + 1}",
+                question = firstNonBlank(
+                    question.optString("title_text"),
+                    question.optString("question"),
+                    question.optString("title"),
+                    question.optString("text"),
+                ) ?: "题目 ${index + 1}",
+                answer = flattenJsonExamAnswer(question.opt("answer")).joinToString("\n"),
+            )
+        }
+    }
+
+    val directAnswers = flattenJsonExamAnswer(modelInfo.opt("answer"))
+    if (directAnswers.isNotEmpty()) {
+        return listOf(
+            EkwingAnswerQuestion(
+                order = "Q1",
+                question = firstNonBlank(
+                    modelInfo.optString("answer_tip"),
+                    modelInfo.optString("title_text"),
+                    modelInfo.optString("desc"),
+                    modelName,
+                ) ?: "题目 1",
+                answer = directAnswers.joinToString("\n"),
+            )
+        )
+    }
+
+    val readingText = firstNonBlank(modelInfo.optString("real_text"), modelInfo.optString("dis_text"))
+    if (!readingText.isNullOrBlank()) {
+        return listOf(
+            EkwingAnswerQuestion(
+                order = "Q1",
+                question = readingText,
+                answer = readingText,
+            )
+        )
+    }
+
+    return emptyList()
+}
+
+private fun flattenJsonExamAnswer(value: Any?): List<String> {
+    val answers = linkedSetOf<String>()
+    fun collect(item: Any?) {
+        when (val normalized = normalizeJson(item)) {
+            null, JSONObject.NULL -> Unit
+            is JSONArray -> {
+                for (index in 0 until normalized.length()) collect(normalized.opt(index))
+            }
+            is JSONObject -> {
+                listOf("answer", "answers", "right_answer", "standard_answer", "refText", "text", "content")
+                    .forEach { key ->
+                        if (normalized.has(key)) collect(normalized.opt(key))
+                    }
+            }
+            else -> cleanDisplayText(normalized.toString()).takeIf { it.isNotBlank() }?.let { answers += it }
+        }
+    }
+    collect(value)
+    return answers.toList()
+}
+
+private fun titleFromModelBaseInfo(modelBaseInfo: JSONObject?): String? {
+    if (modelBaseInfo == null) return null
+    val titleInfo = modelBaseInfo.optJSONObject("title_info")
+    if (titleInfo != null) {
+        firstNonBlank(titleInfo.optString("title"), titleInfo.optString("name"))?.let { return it }
+    }
+    return firstNonBlank(modelBaseInfo.optString("title"), modelBaseInfo.optString("name"))
+}
+
+private fun knownModelTypeName(modelType: String?): String? {
+    return when (modelType) {
+        "1" -> "模仿朗读"
+        "6" -> "信息转述"
+        "7" -> "听选信息"
+        "8" -> "回答问题"
+        "9" -> "询问信息"
+        else -> null
+    }
+}
+
 private fun collectExamQuestions(value: Any?, questions: MutableList<EkwingAnswerQuestion>) {
     when (value) {
         is JSONArray -> {
@@ -963,7 +1128,7 @@ private fun parseExamReportQuestions(report: JSONObject): List<EkwingAnswerQuest
                 parsed += EkwingAnswerQuestion(
                     order = "Q${parsed.size + 1}",
                     question = firstQuestionText(question) ?: "题目 ${parsed.size + 1}",
-                    answer = formatExamAnswerWithDetails(question, answer),
+                    answer = answer,
                 )
             }
         }
@@ -987,21 +1152,9 @@ private fun parseExamModelInfoQuestions(value: JSONObject): List<EkwingAnswerQue
             order = "Q1",
             question = firstQuestionText(modelInfo) ?: firstNonBlank(modelInfo.optString("model_type_name"), modelInfo.optString("name"))
                 ?: "题目 1",
-            answer = formatExamAnswerWithDetails(modelInfo, answer),
+            answer = answer,
         )
     )
-}
-
-private fun formatExamAnswerWithDetails(item: JSONObject, answer: String): String {
-    val details = ANSWER_DETAIL_KEYS.mapNotNull { detail ->
-        item.opt(detail.key).takeUnless { it == JSONObject.NULL }?.let { value ->
-            flattenAnswer(value).joinToString("\n")
-                .ifBlank { cleanDisplayText(value.toString()) }
-                .takeIf { it.isNotBlank() && it != answer }
-                ?.let { "${detail.label}: $it" }
-        }
-    }
-    return (listOf(answer) + details).distinct().joinToString("\n")
 }
 
 private fun parseHomeworkAnswerItems(items: JSONArray, fallbackQuestion: String? = null): List<EkwingAnswerQuestion> {
@@ -1041,7 +1194,7 @@ private fun homeworkAnswerItems(value: Any?): JSONArray? {
     fun isAnswerItemArray(array: JSONArray): Boolean {
         return (0 until array.length()).any { index ->
             when (val item = array.opt(index)) {
-                is JSONObject -> ANSWER_KEYS.any { item.has(it) } || QUESTION_KEYS.any { item.has(it) }
+                is JSONObject -> STANDARD_ANSWER_KEYS.any { item.has(it) } || QUESTION_KEYS.any { item.has(it) }
                 null, JSONObject.NULL -> false
                 else -> item.toString().isNotBlank()
             }
@@ -1070,7 +1223,7 @@ private fun findAnswerLikeObjects(value: Any?): List<JSONObject> {
     fun visit(item: Any?) {
         when (item) {
             is JSONObject -> {
-                if (ANSWER_KEYS.any { item.has(it) }) {
+                if (STANDARD_ANSWER_KEYS.any { item.has(it) }) {
                     found += item
                 }
                 item.keys().forEach { key -> visit(item.opt(key)) }
@@ -1085,8 +1238,7 @@ private fun findAnswerLikeObjects(value: Any?): List<JSONObject> {
 }
 
 private fun looksLikeAnswerObject(item: JSONObject): Boolean {
-    return ANSWER_KEYS.any { item.has(it) } ||
-        (QUESTION_KEYS.any { item.has(it) } && ANSWER_RESULT_DETAIL_KEYS.any { item.has(it) })
+    return STANDARD_ANSWER_KEYS.any { item.has(it) }
 }
 
 private fun findQuestionLikeObjects(value: Any?): List<JSONObject> {
@@ -1123,7 +1275,7 @@ private fun flattenAnswer(value: Any?, strict: Boolean = false): List<String> {
             }
             is JSONObject -> {
                 var collected = false
-                ANSWER_KEYS.forEach { key ->
+                STANDARD_ANSWER_KEYS.forEach { key ->
                     if (item.has(key)) {
                         collected = true
                         collect(item.opt(key), fromAnswerField = true)
@@ -1146,26 +1298,7 @@ private fun formatAnswerText(item: JSONObject): String {
         .ifBlank {
             if (QUESTION_KEYS.any { item.has(it) }) "" else flattenAnswer(item).joinToString("\n")
         }
-    if (primaryAnswer.isBlank() && !ANSWER_RESULT_DETAIL_KEYS.any { item.has(it) }) {
-        return ""
-    }
-    val details = ANSWER_DETAIL_KEYS.mapNotNull { detail ->
-        item.opt(detail.key).takeUnless { it == JSONObject.NULL }?.let { value ->
-            flattenAnswer(value).joinToString("\n")
-                .ifBlank { cleanDisplayText(value.toString()) }
-                .takeIf { it.isNotBlank() && it != primaryAnswer }
-                ?.let { "${detail.label}: $it" }
-        }
-    }
-    if (primaryAnswer.isBlank()) {
-        if (details.size == 1 && details.single().startsWith("学生作答: ")) {
-            return details.single().removePrefix("学生作答: ")
-        }
-        return details.distinct().joinToString("\n")
-    }
-    return (listOf(primaryAnswer).filter { it.isNotBlank() } + details)
-        .distinct()
-        .joinToString("\n")
+    return primaryAnswer
 }
 
 private fun normalizeJson(value: Any?): Any? {
@@ -1199,6 +1332,87 @@ private fun normalizeJson(value: Any?): Any? {
 
 private fun extractEmbeddedJson(text: String): Any? {
     return extractBalancedJson(text, '{') ?: extractBalancedJson(text, '[')
+}
+
+internal fun extractScoreJsonFromText(text: String): Any? {
+    val decoded = decodeHtmlEntities(repairMojibakeText(text))
+    extractJsonParseCandidates(decoded)
+        .firstOrNull(::hasExamAnswerJson)
+        ?.let { return normalizeJson(it) }
+    extractRawJsonCandidates(decoded, maxCandidates = 80)
+        .firstOrNull(::hasExamAnswerJson)
+        ?.let { return normalizeJson(it) }
+    return null
+}
+
+private fun extractJsonParseCandidates(text: String): List<Any> {
+    val pattern = Regex("""JSON\.parse\(\s*(['"])(.*?)\1\s*\)""", RegexOption.DOT_MATCHES_ALL)
+    return pattern.findAll(text).mapNotNull { match ->
+        val raw = match.groupValues[2]
+        listOf(raw, decodeUnicodeEscapes(raw))
+            .asSequence()
+            .mapNotNull { parseJsonCandidate(it) }
+            .firstOrNull()
+    }.toList()
+}
+
+private fun extractRawJsonCandidates(text: String, maxCandidates: Int): List<Any> {
+    val candidates = mutableListOf<Any>()
+    text.indices.asSequence()
+        .filter { text[it] == '{' || text[it] == '[' }
+        .forEach { start ->
+            val opening = text[start]
+            val closing = if (opening == '{') '}' else ']'
+            extractBalancedJsonAt(text, start, opening, closing)?.let { candidate ->
+                candidates += candidate
+                if (candidates.size >= maxCandidates) return candidates
+            }
+        }
+    return candidates
+}
+
+private fun extractBalancedJsonAt(text: String, start: Int, opening: Char, closing: Char): Any? {
+    var depth = 0
+    var inString = false
+    var escaped = false
+    for (index in start until text.length) {
+        val char = text[index]
+        if (inString) {
+            when {
+                escaped -> escaped = false
+                char == '\\' -> escaped = true
+                char == '"' -> inString = false
+            }
+            continue
+        }
+        when (char) {
+            '"' -> inString = true
+            opening -> depth += 1
+            closing -> {
+                depth -= 1
+                if (depth == 0) {
+                    return parseJsonCandidate(text.substring(start, index + 1))
+                }
+            }
+        }
+    }
+    return null
+}
+
+private fun hasExamAnswerJson(value: Any?): Boolean {
+    return when (val normalized = normalizeJson(value)) {
+        is JSONArray -> (0 until normalized.length()).any { index -> hasExamAnswerJson(normalized.opt(index)) }
+        is JSONObject -> {
+            if (normalized.has("model_info") || normalized.has("model_score_infos")) return true
+            if (STANDARD_ANSWER_KEYS.any { normalized.has(it) }) return true
+            normalized.keys().asSequence().any { key -> hasExamAnswerJson(normalized.opt(key)) }
+        }
+        is String -> {
+            val lowered = normalized.lowercase()
+            listOf("model_info", "model_score_infos", "answer", "right_answer", "standard_answer").any { it in lowered }
+        }
+        else -> false
+    }
 }
 
 private fun extractBalancedJson(text: String, opening: Char): Any? {
@@ -1598,11 +1812,9 @@ private val PRIMARY_ANSWER_KEYS = listOf(
     "std_answer",
     "real_answer",
     "reference_answer",
-    "answer_info",
     "refText",
     "real_text",
     "dis_text",
-    "answer_content",
     "right",
     "right_ans",
     "rightAns",
@@ -1615,20 +1827,7 @@ private val PRIMARY_ANSWER_KEYS = listOf(
     "ref_answer",
 )
 
-private val ANSWER_KEYS = PRIMARY_ANSWER_KEYS + listOf(
-    "user_answer",
-    "userAnswer",
-    "stu_answer",
-    "stuAnswer",
-    "student_answer",
-    "studentAnswer",
-    "my_answer",
-    "myAnswer",
-    "record_answer",
-    "recordAnswer",
-    "user_ans",
-    "hypothesis",
-)
+private val STANDARD_ANSWER_KEYS = PRIMARY_ANSWER_KEYS
 
 private val QUESTION_KEYS = listOf(
     "title_text",
@@ -1668,50 +1867,6 @@ private val ANSWER_TEXT_KEYS = listOf(
     "option",
     "option_text",
     "optionText",
-)
-
-private data class AnswerDetailKey(
-    val key: String,
-    val label: String,
-)
-
-private val ANSWER_DETAIL_KEYS = listOf(
-    AnswerDetailKey("user_answer", "学生作答"),
-    AnswerDetailKey("userAnswer", "学生作答"),
-    AnswerDetailKey("stu_answer", "学生作答"),
-    AnswerDetailKey("stuAnswer", "学生作答"),
-    AnswerDetailKey("student_answer", "学生作答"),
-    AnswerDetailKey("studentAnswer", "学生作答"),
-    AnswerDetailKey("my_answer", "学生作答"),
-    AnswerDetailKey("myAnswer", "学生作答"),
-    AnswerDetailKey("record_answer", "学生作答"),
-    AnswerDetailKey("recordAnswer", "学生作答"),
-    AnswerDetailKey("user_ans", "学生作答"),
-    AnswerDetailKey("score", "得分"),
-    AnswerDetailKey("total_score", "得分"),
-    AnswerDetailKey("audio", "录音"),
-    AnswerDetailKey("accuracy", "准确度"),
-    AnswerDetailKey("fluency", "流利度"),
-    AnswerDetailKey("integrity", "完整度"),
-)
-
-private val ANSWER_RESULT_DETAIL_KEYS = setOf(
-    "user_answer",
-    "userAnswer",
-    "stu_answer",
-    "stuAnswer",
-    "student_answer",
-    "studentAnswer",
-    "my_answer",
-    "myAnswer",
-    "record_answer",
-    "recordAnswer",
-    "user_ans",
-    "score",
-    "total_score",
-    "accuracy",
-    "fluency",
-    "integrity",
 )
 
 private val DETAIL_LIST_KEYS = listOf(
@@ -1819,7 +1974,7 @@ private fun examScoreUrl(exam: JSONObject): String? {
         .firstOrNull { it.pathFromUrl()?.contains("scoreinfo", ignoreCase = true) == true }
 }
 
-private fun extractModelScoreRequests(value: Any?): List<JSONObject> {
+internal fun extractModelScoreRequests(value: Any?): List<JSONObject> {
     val requests = linkedMapOf<String, JSONObject>()
     fun visit(item: Any?) {
         when (val normalized = normalizeJson(item)) {

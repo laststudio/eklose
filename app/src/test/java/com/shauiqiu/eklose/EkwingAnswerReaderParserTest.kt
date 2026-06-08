@@ -1,6 +1,7 @@
 package com.shauiqiu.eklose
 
 import org.json.JSONObject
+import org.json.JSONArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -184,7 +185,7 @@ class EkwingAnswerReaderParserTest {
     }
 
     @Test
-    fun parseHomeworkAnsBlockKeepsStudentAnswerAndScoreDetails() {
+    fun parseHomeworkAnsBlockOnlyKeepsStandardAnswer() {
         val questions = parseHomeworkAnswers(
             JSONObject(
                 """
@@ -208,14 +209,11 @@ class EkwingAnswerReaderParserTest {
         )
 
         assertEquals("Hello world", questions.single().question)
-        assertEquals(
-            "Hello world\n学生作答: Hello word\n得分: 87\n录音: https://example.test/a.mp3\n准确度: 92",
-            questions.single().answer,
-        )
+        assertEquals("Hello world", questions.single().answer)
     }
 
     @Test
-    fun parseHomeworkAnsBlockKeepsResultDetailsWithoutStandardAnswer() {
+    fun parseHomeworkAnsBlockDoesNotTreatResultDetailsAsStandardAnswer() {
         val questions = parseHomeworkAnswers(
             JSONObject(
                 """
@@ -236,10 +234,7 @@ class EkwingAnswerReaderParserTest {
         )
 
         assertEquals("Result-only item", questions.single().question)
-        assertEquals(
-            "学生作答: Student result\n得分: 76\n录音: https://example.test/result.mp3",
-            questions.single().answer,
-        )
+        assertEquals("", questions.single().answer)
     }
 
     @Test
@@ -309,7 +304,7 @@ class EkwingAnswerReaderParserTest {
     }
 
     @Test
-    fun parseHomeworkUserAnswerFallbackKeys() {
+    fun parseHomeworkUserAnswerFieldsAreNotStandardAnswers() {
         val questions = parseHomeworkAnswers(
             JSONObject(
                 """
@@ -324,8 +319,8 @@ class EkwingAnswerReaderParserTest {
         )
 
         assertEquals(2, questions.size)
-        assertEquals("Answer content value", questions[0].answer)
-        assertEquals("User ans value", questions[1].answer)
+        assertEquals("", questions[0].answer)
+        assertEquals("", questions[1].answer)
     }
 
     @Test
@@ -506,6 +501,277 @@ class EkwingAnswerReaderParserTest {
 
         assertEquals("Choose the right sentence", questions.single().question)
         assertEquals("Correct sentence", questions.single().answer)
+    }
+
+    @Test
+    fun parseExamModelScoreOnlyOutputsStandardAnswer() {
+        val questions = EkwingAnswerParser.parseExamAnswerQuestions(
+            JSONObject(
+                """
+                {
+                  "data": {
+                    "model_info": {
+                      "model_type_name": "回答问题",
+                      "ques_list": [
+                        {
+                          "title_text": "Current exam question",
+                          "answer": ["Correct exam answer"],
+                          "user_ans": "Student answer",
+                          "score": "80"
+                        }
+                      ]
+                    }
+                  }
+                }
+                """.trimIndent()
+            )
+        )
+
+        assertEquals(1, questions.size)
+        assertEquals("Current exam question", questions.single().question)
+        assertEquals("Correct exam answer", questions.single().answer)
+    }
+
+    @Test
+    fun parseExamModelScoreDoesNotUseStudentAnswerAsStandardAnswer() {
+        val questions = EkwingAnswerParser.parseExamAnswerQuestions(
+            JSONObject(
+                """
+                {
+                  "data": {
+                    "model_info": {
+                      "model_type_name": "回答问题",
+                      "ques_list": [
+                        {
+                          "title_text": "Historical exam question",
+                          "user_ans": "Student only answer",
+                          "score": "76"
+                        }
+                      ]
+                    }
+                  }
+                }
+                """.trimIndent()
+            )
+        )
+
+        assertEquals(1, questions.size)
+        assertEquals("Historical exam question", questions.single().question)
+        assertEquals("", questions.single().answer)
+    }
+
+    @Test
+    fun parseExamReportUsesReferenceTextNotSpokenResultDetails() {
+        val questions = EkwingAnswerParser.parseExamAnswerQuestions(
+            JSONObject(
+                """
+                {
+                  "self_info": {"self_id": "exam-1"},
+                  "ans_info": {
+                    "content": [
+                      {
+                        "ques_list": [
+                          {
+                            "title": "Read aloud",
+                            "refText": ["Correct sentence"],
+                            "hypothesis": "Student spoken sentence",
+                            "score": "90"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+                """.trimIndent()
+            )
+        )
+
+        assertEquals(1, questions.size)
+        assertEquals("Read aloud", questions.single().question)
+        assertEquals("Correct sentence", questions.single().answer)
+    }
+
+    @Test
+    fun examAnswerQuestionsPreferModelScoreStandardAnswersOverScoreReport() {
+        val scoreInfo = JSONObject(
+            """
+            {
+              "ans_info": {
+                "content": [
+                  {
+                    "ques_list": [
+                      {
+                        "title": "Historical report question",
+                        "user_ans": "Student spoken sentence",
+                        "hypothesis": "Student spoken sentence",
+                        "score": "90"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+            """.trimIndent()
+        )
+        val modelScoreInfos = JSONArray(
+            """
+            [
+              {
+                "data": {
+                  "model_info": {
+                    "model_type_name": "回答问题",
+                    "ques_list": [
+                      {
+                        "title_text": "Historical model question",
+                        "answer": ["Correct model answer"],
+                        "user_ans": "Student spoken sentence",
+                        "score": "90"
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
+            """.trimIndent()
+        )
+
+        val questions = examAnswerQuestions(scoreInfo, modelScoreInfos)
+
+        assertEquals(1, questions.size)
+        assertEquals("Historical model question", questions.single().question)
+        assertEquals("Correct model answer", questions.single().answer)
+    }
+
+    @Test
+    fun parseJsonExamAnswersMatchesPythonModelScoreRawShape() {
+        val questions = parseJsonExamAnswers(
+            JSONArray(
+                """
+                [
+                  {
+                    "ok": true,
+                    "request": {
+                      "url": "https://mapi.ekwing.com/student/exam/getmodelscoreinfo?self_id=self-1&model_id=model-7"
+                    },
+                    "path": "/student/exam/getmodelscoreinfo",
+                    "payload": {
+                      "self_id": "self-1",
+                      "model_id": "model-7"
+                    },
+                    "data": {
+                      "model_base_info": {
+                        "title_info": {"title": "听后回答"}
+                      },
+                      "model_info": {
+                        "model_type": "8",
+                        "ques_list": [
+                          {
+                            "qid": "q1",
+                            "question": "What did Tom buy?",
+                            "answer": [{"text": "A book"}],
+                            "user_ans": "A pen"
+                          },
+                          {
+                            "qid": "q2",
+                            "title": "Where is Tom?",
+                            "answer": ["In the library"]
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+                """.trimIndent()
+            )
+        )
+
+        assertEquals(2, questions.size)
+        assertEquals("What did Tom buy?", questions[0].question)
+        assertEquals("A book", questions[0].answer)
+        assertEquals("Where is Tom?", questions[1].question)
+        assertEquals("In the library", questions[1].answer)
+    }
+
+    @Test
+    fun parseJsonExamAnswersAcceptsResultRootModelScoreInfos() {
+        val questions = parseJsonExamAnswers(
+            JSONObject(
+                """
+                {
+                  "model_score_infos": [
+                    {
+                      "ok": true,
+                      "data": {
+                        "model_info": {
+                          "model_type": "6",
+                          "answer_tip": "Retell the information",
+                          "answer": {"content": "Reference retelling"}
+                        }
+                      }
+                    }
+                  ]
+                }
+                """.trimIndent()
+            )
+        )
+
+        assertEquals(1, questions.size)
+        assertEquals("Retell the information", questions.single().question)
+        assertEquals("Reference retelling", questions.single().answer)
+    }
+
+    @Test
+    fun extractScoreJsonFromHtmlJsonParseThenParsesExamAnswers() {
+        val json = """
+            {
+              "model_info": {
+                "ques_list": [
+                  {
+                    "title_text": "HTML wrapped question",
+                    "answer": ["HTML wrapped answer"],
+                    "user_ans": "Student answer"
+                  }
+                ]
+              }
+            }
+        """.trimIndent()
+        val html = "<html><script>window.__data = JSON.parse('${json.replace("\\", "\\\\").replace("'", "\\'")}');</script></html>"
+
+        val extracted = extractScoreJsonFromText(html)
+        val questions = parseJsonExamAnswers(extracted)
+
+        assertEquals(1, questions.size)
+        assertEquals("HTML wrapped question", questions.single().question)
+        assertEquals("HTML wrapped answer", questions.single().answer)
+    }
+
+    @Test
+    fun extractModelScoreRequestsMatchesReleaseScoreInfoLinks() {
+        val requests = extractModelScoreRequests(
+            JSONObject(
+                """
+                {
+                  "ans_info": {
+                    "content": [
+                      {
+                        "ques_list": [
+                          {
+                            "url": "https://mapi.ekwing.com/student/exam/getmodelscoreinfo?self_id=self-1&model_id=model-7",
+                            "status": "done"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+                """.trimIndent()
+            )
+        )
+
+        assertEquals(1, requests.size)
+        assertEquals("/student/exam/getmodelscoreinfo", requests.single().optString("path"))
+        assertEquals("self-1", requests.single().optString("self_id"))
+        assertEquals("model-7", requests.single().optString("model_id"))
     }
 
     @Test

@@ -12,6 +12,13 @@ If `.codegraph/` does not exist or CodeGraph reports that the project is not ini
 - For shell commands in this environment, use the `rtk` prefix.
 - Do not guess ambiguous user intent. If a change could reasonably be interpreted in multiple ways and the choice affects behavior or UI, ask first.
 
+## Ekwing Exam Reading Hard Constraint
+
+- In this project, the UI labels that may be described as current/history homework are actually learning-center exam tasks. Keep them mapped to the exam flows: current tasks come from `/student/Hw/getnewmainlist` or `/student/Hw/getbasicnewmainlist` filtered with `type=exam`; historical tasks come from `/student/exam/getstuexamlist` or `/student/exam/getbasicstuexamlist`.
+- When changing learning-center exam question download or answer parsing, use `D:\Users\34647\Desktop\myProject\ekwing_get_answer\release.py` as the source of truth. The aligned exam detail flow is `getstuexamitem` for exam item data, `getscoreinfo`/`getbasicscoreinfo` for score info, then `getmodelscoreinfo` for model score data.
+- `getscoreinfo` is POST, but `getmodelscoreinfo` must be fetched like `release.py` does through the score-page GET path with query parameters. Do not replace the exam model-score answer flow with normal homework answer APIs.
+- Correct exam answers should be parsed from `model_score_infos`/`model_info` standard answer fields first. Student answer fields such as `user_ans`, `user_answer`, `hypothesis`, scores, audio, and pronunciation details are result metadata and must not be treated as the standard answer unless the Python source of truth changes.
+
 ## UI Hard Constraint
 
 When building or modifying the Android UI, visible UI and interaction controls must use miuix components whenever miuix provides an equivalent.
