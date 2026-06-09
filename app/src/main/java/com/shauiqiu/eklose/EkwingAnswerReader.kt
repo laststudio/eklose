@@ -12,6 +12,17 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
 import java.net.URLEncoder
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 private const val EK_BASE_URL = "https://mapi.ekwing.com"
 private const val HOMEWORK_LIST_PATH = "/student/Hw/getList"
@@ -55,20 +66,337 @@ data class EkwingAnswerQuestion(
     val answer: String,
 )
 
+enum class EkwingAnswerSource(
+    val cacheKey: String,
+) {
+    Current("current"),
+    History("history");
+}
+
+enum class EkwingAnswerParseStatus {
+    Pending,
+    Loading,
+    Ready,
+    Failed,
+}
+
+data class EkwingAnswerParseState(
+    val status: EkwingAnswerParseStatus,
+    val errorMessage: String? = null,
+)
+
+data class EkwingAnswerSourceState(
+    val papers: List<EkwingAnswerPaper> = emptyList(),
+    val taskByPaperKey: Map<String, String> = emptyMap(),
+    val sectionsByPaperKey: Map<String, List<EkwingAnswerSection>> = emptyMap(),
+    val parseStateByPaperKey: Map<String, EkwingAnswerParseState> = emptyMap(),
+)
+
+internal fun canOpenPaper(parseState: EkwingAnswerParseState?): Boolean {
+    return parseState?.status == EkwingAnswerParseStatus.Ready
+}
+
 object EkwingAnswerState {
-    var papers: List<EkwingAnswerPaper> = emptyList()
-    var taskByPaperKey: Map<String, String> = emptyMap()
-    var sectionsByPaperKey: Map<String, List<EkwingAnswerSection>> = emptyMap()
+    private val stateFlow = MutableStateFlow(
+        mapOf(
+            EkwingAnswerSource.Current to EkwingAnswerSourceState(),
+            EkwingAnswerSource.History to EkwingAnswerSourceState(),
+        )
+    )
+
+    val states: StateFlow<Map<EkwingAnswerSource, EkwingAnswerSourceState>> = stateFlow.asStateFlow()
+
+    var papers: List<EkwingAnswerPaper>
+        get() = sourceState(EkwingAnswerSource.Current).papers
+        set(value) {
+            updateSource(EkwingAnswerSource.Current) { it.copy(papers = value) }
+        }
+    var taskByPaperKey: Map<String, String>
+        get() = sourceState(EkwingAnswerSource.Current).taskByPaperKey
+        set(value) {
+            updateSource(EkwingAnswerSource.Current) { it.copy(taskByPaperKey = value) }
+        }
+    var sectionsByPaperKey: Map<String, List<EkwingAnswerSection>>
+        get() = sourceState(EkwingAnswerSource.Current).sectionsByPaperKey
+        set(value) {
+            updateSource(EkwingAnswerSource.Current) { it.copy(sectionsByPaperKey = value) }
+        }
+
+    fun sourceState(source: EkwingAnswerSource): EkwingAnswerSourceState {
+        return stateFlow.value[source] ?: EkwingAnswerSourceState()
+    }
+
+    fun setSourceState(source: EkwingAnswerSource, state: EkwingAnswerSourceState) {
+        stateFlow.update { current -> current + (source to state) }
+    }
+
+    fun updateSource(
+        source: EkwingAnswerSource,
+        transform: (EkwingAnswerSourceState) -> EkwingAnswerSourceState,
+    ) {
+        stateFlow.update { current ->
+            val oldState = current[source] ?: EkwingAnswerSourceState()
+            current + (source to transform(oldState))
+        }
+    }
 
     fun clear() {
-        papers = emptyList()
-        taskByPaperKey = emptyMap()
-        sectionsByPaperKey = emptyMap()
+        stateFlow.value = mapOf(
+            EkwingAnswerSource.Current to EkwingAnswerSourceState(),
+            EkwingAnswerSource.History to EkwingAnswerSourceState(),
+        )
     }
+}
+
+object EkwingAnswerCacheStore {
+    private const val PREFS_NAME = "ekwing_answer_cache"
+
+    fun restore(context: Context) {
+        EkwingAnswerSource.entries.forEach { source ->
+            EkwingAnswerState.setSourceState(source, loadSourceState(context, source))
+        }
+    }
+
+    fun saveSourceState(
+        context: Context,
+        source: EkwingAnswerSource,
+        state: EkwingAnswerSourceState,
+    ) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(source.cacheKey, sourceStateToJson(state).toString())
+            .apply()
+    }
+
+    fun loadSourceState(context: Context, source: EkwingAnswerSource): EkwingAnswerSourceState {
+        val text = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(source.cacheKey, null)
+            ?: return EkwingAnswerSourceState()
+        return runCatching { sourceStateFromJson(JSONObject(text)) }
+            .getOrDefault(EkwingAnswerSourceState())
+    }
+
+    fun clear(context: Context) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .clear()
+            .apply()
+        EkwingAnswerState.clear()
+    }
+}
+
+object EkwingAnswerPrefetchManager {
+    private const val CONCURRENCY = 3
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val semaphore = Semaphore(CONCURRENCY)
+    private val jobs = mutableMapOf<String, Job>()
+
+    fun enqueueAll(
+        context: Context,
+        source: EkwingAnswerSource,
+        papers: List<EkwingAnswerPaper>,
+    ) {
+        val appContext = context.applicationContext
+        papers.forEach { paper -> enqueue(appContext, source, paper.key) }
+    }
+
+    fun enqueue(
+        context: Context,
+        source: EkwingAnswerSource,
+        paperKey: String,
+    ) {
+        if (paperKey.isBlank()) return
+        val jobKey = "${source.cacheKey}:$paperKey"
+        synchronized(jobs) {
+            val existing = jobs[jobKey]
+            if (existing?.isActive == true) return
+            val currentState = EkwingAnswerState.sourceState(source)
+            if (currentState.sectionsByPaperKey.containsKey(paperKey)) {
+                EkwingAnswerState.updateSource(source) {
+                    it.copy(parseStateByPaperKey = it.parseStateByPaperKey + (paperKey to EkwingAnswerParseState(EkwingAnswerParseStatus.Ready)))
+                }
+                EkwingAnswerCacheStore.saveSourceState(context, source, EkwingAnswerState.sourceState(source))
+                return
+            }
+            EkwingAnswerState.updateSource(source) {
+                it.copy(parseStateByPaperKey = it.parseStateByPaperKey + (paperKey to EkwingAnswerParseState(EkwingAnswerParseStatus.Pending)))
+            }
+            EkwingAnswerCacheStore.saveSourceState(context, source, EkwingAnswerState.sourceState(source))
+            jobs[jobKey] = scope.launch {
+                semaphore.withPermit {
+                    parseOne(context.applicationContext, source, paperKey)
+                }
+                synchronized(jobs) { jobs.remove(jobKey) }
+            }
+        }
+    }
+
+    fun cancelAll() {
+        synchronized(jobs) {
+            jobs.values.forEach { it.cancel() }
+            jobs.clear()
+        }
+    }
+
+    private fun parseOne(
+        context: Context,
+        source: EkwingAnswerSource,
+        paperKey: String,
+    ) {
+        EkwingAnswerState.updateSource(source) {
+            it.copy(parseStateByPaperKey = it.parseStateByPaperKey + (paperKey to EkwingAnswerParseState(EkwingAnswerParseStatus.Loading)))
+        }
+        EkwingAnswerCacheStore.saveSourceState(context, source, EkwingAnswerState.sourceState(source))
+
+        val sections = runCatching {
+            EkwingAnswerReader(context).readAnswerSections(source, paperKey)
+        }.getOrElse { error ->
+            val failed = EkwingAnswerAssembler.readFailureSection(error)
+            EkwingAnswerState.updateSource(source) {
+                it.copy(
+                    sectionsByPaperKey = it.sectionsByPaperKey + (paperKey to listOf(failed)),
+                    parseStateByPaperKey = it.parseStateByPaperKey + (
+                        paperKey to EkwingAnswerParseState(
+                            status = EkwingAnswerParseStatus.Failed,
+                            errorMessage = error.message,
+                        )
+                        ),
+                )
+            }
+            EkwingAnswerCacheStore.saveSourceState(context, source, EkwingAnswerState.sourceState(source))
+            return
+        }
+
+        EkwingAnswerState.updateSource(source) {
+            it.copy(
+                sectionsByPaperKey = it.sectionsByPaperKey + (paperKey to sections),
+                parseStateByPaperKey = it.parseStateByPaperKey + (paperKey to EkwingAnswerParseState(EkwingAnswerParseStatus.Ready)),
+            )
+        }
+        EkwingAnswerCacheStore.saveSourceState(context, source, EkwingAnswerState.sourceState(source))
+    }
+}
+
+internal fun sourceStateToJson(state: EkwingAnswerSourceState): JSONObject {
+    return JSONObject().apply {
+        put("papers", JSONArray().apply { state.papers.forEach { put(it.toJson()) } })
+        put("taskByPaperKey", JSONObject().apply {
+            state.taskByPaperKey.forEach { (key, value) -> put(key, value) }
+        })
+        put("sectionsByPaperKey", JSONObject().apply {
+            state.sectionsByPaperKey.forEach { (key, value) ->
+                put(key, JSONArray().apply { value.forEach { put(it.toJson()) } })
+            }
+        })
+        put("parseStateByPaperKey", JSONObject().apply {
+            state.parseStateByPaperKey.forEach { (key, value) -> put(key, value.toJson()) }
+        })
+    }
+}
+
+internal fun sourceStateFromJson(value: JSONObject): EkwingAnswerSourceState {
+    val papers = value.optJSONArray("papers").jsonObjects().map { it.toAnswerPaper() }
+    val taskByPaperKey = value.optJSONObject("taskByPaperKey").toStringMap()
+    val sectionsByPaperKey = mutableMapOf<String, List<EkwingAnswerSection>>()
+    value.optJSONObject("sectionsByPaperKey")?.let { root ->
+        root.keys().forEach { key ->
+            sectionsByPaperKey[key] = root.optJSONArray(key).jsonObjects().map { it.toAnswerSection() }
+        }
+    }
+    val parseStateByPaperKey = mutableMapOf<String, EkwingAnswerParseState>()
+    value.optJSONObject("parseStateByPaperKey")?.let { root ->
+        root.keys().forEach { key ->
+            root.optJSONObject(key)?.toParseState()?.let { parseStateByPaperKey[key] = it }
+        }
+    }
+    val readyStates = sectionsByPaperKey.keys.associateWith { EkwingAnswerParseState(EkwingAnswerParseStatus.Ready) }
+    return EkwingAnswerSourceState(
+        papers = papers,
+        taskByPaperKey = taskByPaperKey,
+        sectionsByPaperKey = sectionsByPaperKey,
+        parseStateByPaperKey = parseStateByPaperKey + readyStates,
+    )
+}
+
+private fun EkwingAnswerPaper.toJson(): JSONObject {
+    return JSONObject().apply {
+        put("key", key)
+        put("title", title)
+        put("summary", summary)
+    }
+}
+
+private fun JSONObject.toAnswerPaper(): EkwingAnswerPaper {
+    return EkwingAnswerPaper(
+        key = optString("key"),
+        title = optString("title"),
+        summary = optString("summary"),
+    )
+}
+
+private fun EkwingAnswerSection.toJson(): JSONObject {
+    return JSONObject().apply {
+        put("title", title)
+        put("category", category)
+        put("originalText", originalText)
+        put("questions", JSONArray().apply { questions.forEach { put(it.toJson()) } })
+    }
+}
+
+private fun JSONObject.toAnswerSection(): EkwingAnswerSection {
+    return EkwingAnswerSection(
+        title = optString("title"),
+        category = optString("category"),
+        originalText = optString("originalText"),
+        questions = optJSONArray("questions").jsonObjects().map { it.toAnswerQuestion() },
+    )
+}
+
+private fun EkwingAnswerQuestion.toJson(): JSONObject {
+    return JSONObject().apply {
+        put("order", order)
+        put("question", question)
+        put("answer", answer)
+    }
+}
+
+private fun JSONObject.toAnswerQuestion(): EkwingAnswerQuestion {
+    return EkwingAnswerQuestion(
+        order = optString("order"),
+        question = optString("question"),
+        answer = optString("answer"),
+    )
+}
+
+private fun EkwingAnswerParseState.toJson(): JSONObject {
+    return JSONObject().apply {
+        put("status", status.name)
+        put("errorMessage", errorMessage ?: JSONObject.NULL)
+    }
+}
+
+private fun JSONObject.toParseState(): EkwingAnswerParseState {
+    val status = runCatching { EkwingAnswerParseStatus.valueOf(optString("status")) }
+        .getOrDefault(EkwingAnswerParseStatus.Pending)
+    val restoredStatus = if (status == EkwingAnswerParseStatus.Loading) EkwingAnswerParseStatus.Pending else status
+    return EkwingAnswerParseState(
+        status = restoredStatus,
+        errorMessage = optString("errorMessage").takeIf { it.isNotBlank() && it != "null" },
+    )
+}
+
+private fun JSONObject?.toStringMap(): Map<String, String> {
+    if (this == null) return emptyMap()
+    val result = mutableMapOf<String, String>()
+    keys().forEach { key ->
+        optString(key).takeIf { it.isNotBlank() }?.let { result[key] = it }
+    }
+    return result
 }
 
 class EkwingAnswerReader(private val context: Context) {
     fun readPapers(history: Boolean): List<EkwingAnswerPaper> {
+        val source = if (history) EkwingAnswerSource.History else EkwingAnswerSource.Current
         val session = EkwingLoginStore.loadSession(context)
             ?: reloginWithSavedIdentity()
             ?: throw RuntimeException("请先登录翼课账号")
@@ -83,19 +411,44 @@ class EkwingAnswerReader(private val context: Context) {
         val allItems = taskList.tasks.distinctBy { it.answerPaperKey() }
         val papers = allItems.mapIndexed { index, exam -> exam.toAnswerPaper(index) }
 
-        EkwingAnswerState.papers = papers
-        EkwingAnswerState.taskByPaperKey = allItems.associate { exam ->
-            exam.answerPaperKey() to exam.toString()
+        val oldState = EkwingAnswerState.sourceState(source)
+        val taskByPaperKey = allItems.associate { exam -> exam.answerPaperKey() to exam.toString() }
+        val paperKeys = papers.map { it.key }.toSet()
+        val sectionsByPaperKey = oldState.sectionsByPaperKey.filterKeys { it in paperKeys }
+        val parseStateByPaperKey = papers.associate { paper ->
+            val existing = oldState.parseStateByPaperKey[paper.key]
+            val state = when {
+                sectionsByPaperKey.containsKey(paper.key) -> EkwingAnswerParseState(EkwingAnswerParseStatus.Ready)
+                existing?.status == EkwingAnswerParseStatus.Loading -> EkwingAnswerParseState(EkwingAnswerParseStatus.Pending)
+                existing != null -> existing
+                else -> EkwingAnswerParseState(EkwingAnswerParseStatus.Pending)
+            }
+            paper.key to state
         }
-        EkwingAnswerState.sectionsByPaperKey = emptyMap()
+        val newState = EkwingAnswerSourceState(
+            papers = papers,
+            taskByPaperKey = taskByPaperKey,
+            sectionsByPaperKey = sectionsByPaperKey,
+            parseStateByPaperKey = parseStateByPaperKey,
+        )
+        EkwingAnswerState.setSourceState(source, newState)
+        EkwingAnswerCacheStore.saveSourceState(context, source, newState)
+        EkwingAnswerPrefetchManager.enqueueAll(context, source, papers)
         return papers
     }
 
     fun readAnswerSections(paperKey: String): List<EkwingAnswerSection> {
-        val cachedSections = EkwingAnswerState.sectionsByPaperKey[paperKey]
+        return readAnswerSections(EkwingAnswerSource.Current, paperKey)
+    }
+
+    fun readAnswerSections(
+        source: EkwingAnswerSource,
+        paperKey: String,
+    ): List<EkwingAnswerSection> {
+        val cachedSections = EkwingAnswerState.sourceState(source).sectionsByPaperKey[paperKey]
         if (cachedSections != null) return cachedSections
 
-        val examText = EkwingAnswerState.taskByPaperKey[paperKey]
+        val examText = EkwingAnswerState.sourceState(source).taskByPaperKey[paperKey]
             ?: throw RuntimeException("未找到考试，请先读取考试列表")
         val exam = runCatching { JSONObject(examText) }
             .getOrElse { throw RuntimeException("考试缓存无效，请重新读取列表") }
@@ -108,7 +461,21 @@ class EkwingAnswerReader(private val context: Context) {
         }.getOrElse { error ->
             listOf(EkwingAnswerAssembler.readFailureSection(error))
         }
-        EkwingAnswerState.sectionsByPaperKey = EkwingAnswerState.sectionsByPaperKey + (paperKey to sections)
+        val parseState = if (sections.any { it.category == "error" }) {
+            EkwingAnswerParseState(
+                status = EkwingAnswerParseStatus.Failed,
+                errorMessage = sections.firstOrNull()?.questions?.firstOrNull()?.answer,
+            )
+        } else {
+            EkwingAnswerParseState(EkwingAnswerParseStatus.Ready)
+        }
+        EkwingAnswerState.updateSource(source) {
+            it.copy(
+                sectionsByPaperKey = it.sectionsByPaperKey + (paperKey to sections),
+                parseStateByPaperKey = it.parseStateByPaperKey + (paperKey to parseState),
+            )
+        }
+        EkwingAnswerCacheStore.saveSourceState(context, source, EkwingAnswerState.sourceState(source))
         return sections
     }
 

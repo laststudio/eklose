@@ -25,7 +25,7 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,12 +33,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.shauiqiu.eklose.ui.theme.EkloseTheme
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.Icon
@@ -61,6 +58,9 @@ class AnswerActivity : ComponentActivity() {
         val paperTitle = intent.getStringExtra(EXTRA_PAPER_TITLE).orEmpty()
         val paperSummary = intent.getStringExtra(EXTRA_PAPER_SUMMARY).orEmpty()
         val paperKey = intent.getStringExtra(EXTRA_PAPER_KEY).orEmpty()
+        val source = intent.getStringExtra(EXTRA_SOURCE)
+            ?.let { raw -> runCatching { EkwingAnswerSource.valueOf(raw) }.getOrNull() }
+            ?: EkwingAnswerSource.Current
 
         enableEdgeToEdge()
         setContent {
@@ -69,6 +69,7 @@ class AnswerActivity : ComponentActivity() {
                     paperTitle = paperTitle,
                     paperSummary = paperSummary,
                     paperKey = paperKey,
+                    source = source,
                     onBack = ::finish,
                 )
             }
@@ -79,17 +80,20 @@ class AnswerActivity : ComponentActivity() {
         private const val EXTRA_PAPER_TITLE = "paper_title"
         private const val EXTRA_PAPER_SUMMARY = "paper_summary"
         private const val EXTRA_PAPER_KEY = "paper_key"
+        private const val EXTRA_SOURCE = "source"
 
         fun createIntent(
             context: Context,
             paperTitle: String,
             paperSummary: String,
             paperKey: String = "",
+            source: EkwingAnswerSource = EkwingAnswerSource.Current,
         ): Intent {
             return Intent(context, AnswerActivity::class.java)
                 .putExtra(EXTRA_PAPER_TITLE, paperTitle)
                 .putExtra(EXTRA_PAPER_SUMMARY, paperSummary)
                 .putExtra(EXTRA_PAPER_KEY, paperKey)
+                .putExtra(EXTRA_SOURCE, source.name)
         }
     }
 }
@@ -144,36 +148,15 @@ private fun AnswerScreen(
     paperTitle: String,
     paperSummary: String,
     paperKey: String,
+    source: EkwingAnswerSource,
     onBack: () -> Unit,
 ) {
-    val context = LocalContext.current
     var selectedAnswer by remember { mutableStateOf<SelectedAnswer?>(null) }
-    var answerSections by remember(paperKey) {
-        mutableStateOf(
-            EkwingAnswerState.sectionsByPaperKey[paperKey]?.toUiAnswerSections()
-                ?: loadingAnswerSections,
-        )
-    }
-
-    LaunchedEffect(paperKey) {
-        if (paperKey.isBlank()) {
-            answerSections = listOf(
-                EkwingAnswerAssembler.readFailureSection(
-                    RuntimeException("未找到考试，请先读取考试列表")
-                )
-            ).toUiAnswerSections()
-            return@LaunchedEffect
-        }
-        if (EkwingAnswerState.sectionsByPaperKey.containsKey(paperKey)) return@LaunchedEffect
-        val loadedSections = withContext(Dispatchers.IO) {
-            runCatching {
-                EkwingAnswerReader(context).readAnswerSections(paperKey)
-            }.getOrElse { error ->
-                listOf(EkwingAnswerAssembler.readFailureSection(error))
-            }
-        }
-        answerSections = loadedSections.toUiAnswerSections()
-    }
+    val states by EkwingAnswerState.states.collectAsState()
+    val sourceState = states[source] ?: EkwingAnswerSourceState()
+    val parseState = sourceState.parseStateByPaperKey[paperKey]
+    val answerSections = sourceState.sectionsByPaperKey[paperKey]?.toUiAnswerSections()
+        ?: answerPlaceholderSections(paperKey, parseState)
     val questionCount = answerSections.sumOf { it.questions.size }
     val topBarTitle = paperTitle.ifBlank { "答案" }
     val scrollBehavior = MiuixScrollBehavior()
@@ -248,6 +231,27 @@ private fun AnswerScreen(
             )
         }
     }
+}
+
+private fun answerPlaceholderSections(
+    paperKey: String,
+    parseState: EkwingAnswerParseState?,
+): List<AnswerSection> {
+    if (paperKey.isBlank()) {
+        return listOf(
+            EkwingAnswerAssembler.readFailureSection(
+                RuntimeException("未找到考试，请先读取考试列表")
+            )
+        ).toUiAnswerSections()
+    }
+    if (parseState?.status == EkwingAnswerParseStatus.Failed) {
+        return listOf(
+            EkwingAnswerAssembler.readFailureSection(
+                RuntimeException(parseState.errorMessage ?: "答案解析失败")
+            )
+        ).toUiAnswerSections()
+    }
+    return loadingAnswerSections
 }
 
 private data class SelectedAnswer(

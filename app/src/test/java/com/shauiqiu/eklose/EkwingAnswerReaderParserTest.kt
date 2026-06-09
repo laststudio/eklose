@@ -978,6 +978,86 @@ class EkwingAnswerReaderParserTest {
     }
 
     @Test
+    fun answerSourceStateSerializesPapersSectionsAndStatuses() {
+        val state = EkwingAnswerSourceState(
+            papers = listOf(EkwingAnswerPaper("exam:1", "考试 1", "学习中心考试")),
+            taskByPaperKey = mapOf("exam:1" to """{"self_id":"1"}"""),
+            sectionsByPaperKey = mapOf(
+                "exam:1" to listOf(
+                    EkwingAnswerSection(
+                        title = "考试答案",
+                        category = "exam",
+                        originalText = "原文",
+                        questions = listOf(
+                            EkwingAnswerQuestion(
+                                order = "Q1",
+                                question = "题目",
+                                answer = "答案",
+                            )
+                        ),
+                    )
+                )
+            ),
+            parseStateByPaperKey = mapOf(
+                "exam:1" to EkwingAnswerParseState(EkwingAnswerParseStatus.Ready),
+                "exam:2" to EkwingAnswerParseState(EkwingAnswerParseStatus.Failed, "失败"),
+            ),
+        )
+
+        val restored = sourceStateFromJson(sourceStateToJson(state))
+
+        assertEquals(state.papers, restored.papers)
+        assertEquals(state.taskByPaperKey, restored.taskByPaperKey)
+        assertEquals(state.sectionsByPaperKey, restored.sectionsByPaperKey)
+        assertEquals(EkwingAnswerParseStatus.Ready, restored.parseStateByPaperKey.getValue("exam:1").status)
+        assertEquals(EkwingAnswerParseStatus.Failed, restored.parseStateByPaperKey.getValue("exam:2").status)
+        assertEquals("失败", restored.parseStateByPaperKey.getValue("exam:2").errorMessage)
+    }
+
+    @Test
+    fun answerStateKeepsCurrentAndHistorySeparate() {
+        EkwingAnswerState.clear()
+        EkwingAnswerState.setSourceState(
+            EkwingAnswerSource.Current,
+            EkwingAnswerSourceState(papers = listOf(EkwingAnswerPaper("current", "当前", "summary"))),
+        )
+        EkwingAnswerState.setSourceState(
+            EkwingAnswerSource.History,
+            EkwingAnswerSourceState(papers = listOf(EkwingAnswerPaper("history", "历史", "summary"))),
+        )
+
+        assertEquals(listOf("当前"), EkwingAnswerState.sourceState(EkwingAnswerSource.Current).papers.map { it.title })
+        assertEquals(listOf("历史"), EkwingAnswerState.sourceState(EkwingAnswerSource.History).papers.map { it.title })
+        EkwingAnswerState.clear()
+    }
+
+    @Test
+    fun answerStateClearRemovesAllSources() {
+        EkwingAnswerState.setSourceState(
+            EkwingAnswerSource.Current,
+            EkwingAnswerSourceState(papers = listOf(EkwingAnswerPaper("current", "当前", "summary"))),
+        )
+        EkwingAnswerState.setSourceState(
+            EkwingAnswerSource.History,
+            EkwingAnswerSourceState(papers = listOf(EkwingAnswerPaper("history", "历史", "summary"))),
+        )
+
+        EkwingAnswerState.clear()
+
+        assertEquals(emptyList<EkwingAnswerPaper>(), EkwingAnswerState.sourceState(EkwingAnswerSource.Current).papers)
+        assertEquals(emptyList<EkwingAnswerPaper>(), EkwingAnswerState.sourceState(EkwingAnswerSource.History).papers)
+    }
+
+    @Test
+    fun onlyReadyParseStateCanOpenPaper() {
+        assertEquals(false, canOpenPaper(null))
+        assertEquals(false, canOpenPaper(EkwingAnswerParseState(EkwingAnswerParseStatus.Pending)))
+        assertEquals(false, canOpenPaper(EkwingAnswerParseState(EkwingAnswerParseStatus.Loading)))
+        assertEquals(false, canOpenPaper(EkwingAnswerParseState(EkwingAnswerParseStatus.Failed, "失败")))
+        assertEquals(true, canOpenPaper(EkwingAnswerParseState(EkwingAnswerParseStatus.Ready)))
+    }
+
+    @Test
     fun answerStateClearRemovesLazyHomeworkCache() {
         EkwingAnswerState.papers = listOf(EkwingAnswerPaper("key", "title", "summary"))
         EkwingAnswerState.taskByPaperKey = mapOf("key" to "{}")

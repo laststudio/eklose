@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -50,6 +51,7 @@ import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.FloatingToolbar
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -118,14 +120,17 @@ private enum class RootPage(
 private enum class HomeworkScope(
     val label: String,
     val readerSummary: String,
+    val answerSource: EkwingAnswerSource,
 ) {
     Current(
         label = "当前学习中心考试任务",
         readerSummary = "读取当前学习中心考试任务，进入考试后再读取答案",
+        answerSource = EkwingAnswerSource.Current,
     ),
     History(
         label = "历史学习中心考试任务",
         readerSummary = "读取历史学习中心考试任务，进入考试后再读取答案",
+        answerSource = EkwingAnswerSource.History,
     ),
 }
 
@@ -134,11 +139,16 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
     var selectedPage by rememberSaveable { mutableStateOf(RootPage.Home) }
     var selectedHomeworkScopeIndex by rememberSaveable { mutableStateOf(0) }
     var readerSummary by rememberSaveable { mutableStateOf<String?>(null) }
-    var papers by remember { mutableStateOf(EkwingAnswerState.papers) }
     var isReading by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val selectedHomeworkScope = HomeworkScope.entries[selectedHomeworkScopeIndex]
+    val answerStates by EkwingAnswerState.states.collectAsState()
+    val selectedSourceState = answerStates[selectedHomeworkScope.answerSource] ?: EkwingAnswerSourceState()
+
+    LaunchedEffect(Unit) {
+        EkwingAnswerCacheStore.restore(context)
+    }
 
     LaunchedEffect(openHomeRequest) {
         if (openHomeRequest != 0L) {
@@ -212,8 +222,11 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
                         homeworkScope = selectedHomeworkScope,
                         readerSummary = readerSummary,
                         selectedHomeworkScopeIndex = selectedHomeworkScopeIndex,
-                        onHomeworkScopeChange = { selectedHomeworkScopeIndex = it },
-                        papers = papers,
+                        onHomeworkScopeChange = {
+                            selectedHomeworkScopeIndex = it
+                            readerSummary = null
+                        },
+                        sourceState = selectedSourceState,
                         isReading = isReading,
                         onRead = {
                             if (isReading) return@ReaderPage
@@ -227,8 +240,7 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
                                         )
                                     }
                                 }.onSuccess { result ->
-                                    papers = result
-                                    readerSummary = "已加载 ${result.size} 份${selectedHomeworkScope.label}，进入考试后读取答案"
+                                    readerSummary = "已加载 ${result.size} 份${selectedHomeworkScope.label}，正在后台解析答案"
                                 }.onFailure { error ->
                                     readerSummary = "读取失败：${error.message}"
                                 }
@@ -236,8 +248,8 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
                             }
                         },
                         onDelete = {
-                            EkwingAnswerState.clear()
-                            papers = emptyList()
+                            EkwingAnswerPrefetchManager.cancelAll()
+                            EkwingAnswerCacheStore.clear(context)
                             readerSummary = "已清空读取结果"
                         },
                     )
@@ -367,12 +379,13 @@ private fun ReaderPage(
     readerSummary: String?,
     selectedHomeworkScopeIndex: Int,
     onHomeworkScopeChange: (Int) -> Unit,
-    papers: List<EkwingAnswerPaper>,
+    sourceState: EkwingAnswerSourceState,
     isReading: Boolean,
     onRead: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val context = LocalContext.current
+    val papers = sourceState.papers
 
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -400,9 +413,11 @@ private fun ReaderPage(
             item {
                 GroupSection(title = "试卷列表") {
                     papers.forEachIndexed { index, paper ->
-                        ArrowPreference(
-                            title = paper.title,
-                            summary = paper.summary,
+                        val parseState = sourceState.parseStateByPaperKey[paper.key]
+                            ?: EkwingAnswerParseState(EkwingAnswerParseStatus.Pending)
+                        PaperPreference(
+                            paper = paper,
+                            parseState = parseState,
                             onClick = {
                                 context.startActivity(
                                     AnswerActivity.createIntent(
@@ -410,6 +425,7 @@ private fun ReaderPage(
                                         paperTitle = paper.title,
                                         paperSummary = paper.summary,
                                         paperKey = paper.key,
+                                        source = HomeworkScope.entries[selectedHomeworkScopeIndex].answerSource,
                                     )
                                 )
                             },
@@ -440,6 +456,41 @@ private fun ReaderPage(
                 onDelete = onDelete,
             )
         }
+    }
+}
+
+@Composable
+private fun PaperPreference(
+    paper: EkwingAnswerPaper,
+    parseState: EkwingAnswerParseState,
+    onClick: () -> Unit,
+) {
+    val statusSummary = when (parseState.status) {
+        EkwingAnswerParseStatus.Pending -> "${paper.summary} · 等待解析"
+        EkwingAnswerParseStatus.Loading -> "${paper.summary} · 正在解析"
+        EkwingAnswerParseStatus.Ready -> paper.summary
+        EkwingAnswerParseStatus.Failed -> "${paper.summary} · 解析失败：${parseState.errorMessage ?: "未知错误"}"
+    }
+    if (canOpenPaper(parseState)) {
+        ArrowPreference(
+            title = paper.title,
+            summary = statusSummary,
+            onClick = onClick,
+        )
+    } else {
+        GroupItem(
+            title = paper.title,
+            summary = statusSummary,
+            trailing = {
+                if (parseState.status == EkwingAnswerParseStatus.Pending || parseState.status == EkwingAnswerParseStatus.Loading) {
+                    InfiniteProgressIndicator(
+                        color = MiuixTheme.colorScheme.primary,
+                        size = 20.dp,
+                    )
+                }
+            },
+            showArrow = false,
+        )
     }
 }
 
