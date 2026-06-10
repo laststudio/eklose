@@ -54,9 +54,11 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
+import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.basic.Search
@@ -386,60 +388,69 @@ private fun ReaderPage(
 ) {
     val context = LocalContext.current
     val papers = sourceState.papers
+    val pullToRefreshState = rememberPullToRefreshState()
 
     Box(modifier = Modifier.fillMaxSize()) {
-        LazyColumn(
+        PullToRefresh(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+            isRefreshing = isReading,
+            onRefresh = onRead,
+            pullToRefreshState = pullToRefreshState,
+            refreshTexts = listOf("下拉刷新", "松开刷新", "正在刷新", "刷新完成"),
         ) {
-            item {
-                PageLead(
-                    title = "读取",
-                    summary = readerSummary ?: homeworkScope.readerSummary,
-                )
-            }
-            item {
-                GroupSection {
-                    OverlayDropdownPreference(
-                        title = "读取考试",
-                        summary = "选择读取页使用的考试来源",
-                        items = HomeworkScope.entries.map { it.label },
-                        selectedIndex = selectedHomeworkScopeIndex,
-                        onSelectedIndexChange = onHomeworkScopeChange,
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                item {
+                    PageLead(
+                        title = "读取",
+                        summary = readerSummary ?: homeworkScope.readerSummary,
                     )
                 }
-            }
-            item {
-                GroupSection(title = "试卷列表") {
-                    papers.forEachIndexed { index, paper ->
-                        val parseState = sourceState.parseStateByPaperKey[paper.key]
-                            ?: EkwingAnswerParseState(EkwingAnswerParseStatus.Pending)
-                        PaperPreference(
-                            paper = paper,
-                            parseState = parseState,
-                            onClick = {
-                                context.startActivity(
-                                    AnswerActivity.createIntent(
-                                        context = context,
-                                        paperTitle = paper.title,
-                                        paperSummary = paper.summary,
-                                        paperKey = paper.key,
-                                        source = HomeworkScope.entries[selectedHomeworkScopeIndex].answerSource,
-                                    )
-                                )
-                            },
+                item {
+                    GroupSection {
+                        OverlayDropdownPreference(
+                            title = "读取考试",
+                            summary = "选择读取页使用的考试来源",
+                            items = HomeworkScope.entries.map { it.label },
+                            selectedIndex = selectedHomeworkScopeIndex,
+                            onSelectedIndexChange = onHomeworkScopeChange,
                         )
-                        if (index != papers.lastIndex) {
-                            GroupDivider()
-                        }
                     }
-                    if (papers.isEmpty()) {
-                        GroupItem(
-                            title = if (isReading) "正在读取" else "暂无试卷",
-                            summary = if (isReading) "请稍候" else "点击右下角读取按钮加载考试列表",
-                            showArrow = false,
-                        )
+                }
+                item {
+                    GroupSection(title = "试卷列表") {
+                        papers.forEachIndexed { index, paper ->
+                            val parseState = sourceState.parseStateByPaperKey[paper.key]
+                                ?: EkwingAnswerParseState(EkwingAnswerParseStatus.Pending)
+                            PaperPreference(
+                                paper = paper,
+                                parseState = parseState,
+                                onClick = {
+                                    context.startActivity(
+                                        AnswerActivity.createIntent(
+                                            context = context,
+                                            paperTitle = paper.title,
+                                            paperSummary = paper.summary,
+                                            paperKey = paper.key,
+                                            source = HomeworkScope.entries[selectedHomeworkScopeIndex].answerSource,
+                                        )
+                                    )
+                                },
+                            )
+                            if (index != papers.lastIndex) {
+                                GroupDivider()
+                            }
+                        }
+                        if (papers.isEmpty()) {
+                            GroupItem(
+                                title = if (isReading) "正在读取" else "暂无试卷",
+                                summary = if (isReading) "请稍候" else "点击右下角读取按钮加载考试列表",
+                                showArrow = false,
+                            )
+                        }
                     }
                 }
             }

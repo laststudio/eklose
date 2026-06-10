@@ -1,8 +1,25 @@
 package com.shauiqiu.eklose
 
+import android.content.ActivityNotFoundException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color as AndroidColor
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.os.Build
+import android.os.Environment
 import android.os.Bundle
+import android.provider.MediaStore
+import android.text.Layout
+import android.text.StaticLayout
+import android.text.TextPaint
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -33,11 +50,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.shauiqiu.eklose.ui.theme.EkloseTheme
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
+import top.yukonga.miuix.kmp.basic.DropdownEntry
+import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -48,6 +68,8 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.ArrowRight
+import top.yukonga.miuix.kmp.icon.extended.Share
+import top.yukonga.miuix.kmp.menu.OverlayIconDropdownMenu
 import top.yukonga.miuix.kmp.overlay.OverlayBottomSheet
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -151,15 +173,46 @@ private fun AnswerScreen(
     source: EkwingAnswerSource,
     onBack: () -> Unit,
 ) {
+    val context = LocalContext.current
     var selectedAnswer by remember { mutableStateOf<SelectedAnswer?>(null) }
     val states by EkwingAnswerState.states.collectAsState()
     val sourceState = states[source] ?: EkwingAnswerSourceState()
     val parseState = sourceState.parseStateByPaperKey[paperKey]
-    val answerSections = sourceState.sectionsByPaperKey[paperKey]?.toUiAnswerSections()
-        ?: answerPlaceholderSections(paperKey, parseState)
+    val loadedSections = sourceState.sectionsByPaperKey[paperKey]?.toUiAnswerSections()
+    val answerSections = loadedSections ?: answerPlaceholderSections(paperKey, parseState)
+    val shareableSections = loadedSections.orEmpty().filter(AnswerSection::isShareable)
+    val canShareAnswers = shareableSections.isNotEmpty()
     val questionCount = answerSections.sumOf { it.questions.size }
     val topBarTitle = paperTitle.ifBlank { "答案" }
     val scrollBehavior = MiuixScrollBehavior()
+    val shareEntry = remember(paperTitle, answerSections, canShareAnswers) {
+        DropdownEntry(
+            items = listOf(
+                DropdownItem(
+                    text = "复制答案",
+                    enabled = canShareAnswers,
+                    onClick = {
+                        copyAnswerText(
+                            context = context,
+                            paperTitle = topBarTitle,
+                            sections = shareableSections,
+                        )
+                    },
+                ),
+                DropdownItem(
+                    text = "分享图片",
+                    enabled = canShareAnswers,
+                    onClick = {
+                        shareAnswerImage(
+                            context = context,
+                            paperTitle = topBarTitle,
+                            sections = shareableSections,
+                        )
+                    },
+                ),
+            ),
+        )
+    }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -179,6 +232,15 @@ private fun AnswerScreen(
                             imageVector = MiuixIcons.Basic.ArrowRight,
                             contentDescription = "返回",
                             modifier = Modifier.graphicsLayer(scaleX = -1f),
+                            tint = MiuixTheme.colorScheme.onSurface,
+                        )
+                    }
+                },
+                actions = {
+                    OverlayIconDropdownMenu(entry = shareEntry) {
+                        Icon(
+                            imageVector = MiuixIcons.Share,
+                            contentDescription = "分享",
                             tint = MiuixTheme.colorScheme.onSurface,
                         )
                     }
@@ -252,6 +314,220 @@ private fun answerPlaceholderSections(
         ).toUiAnswerSections()
     }
     return loadingAnswerSections
+}
+
+private fun AnswerSection.isShareable(): Boolean {
+    return questions.isNotEmpty() && category != "loading" && category != "error"
+}
+
+private fun copyAnswerText(
+    context: Context,
+    paperTitle: String,
+    sections: List<AnswerSection>,
+) {
+    val text = formatAnswerAsText(paperTitle, sections)
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    clipboard.setPrimaryClip(ClipData.newPlainText(paperTitle, text))
+    Toast.makeText(context, "已复制答案到剪贴板", Toast.LENGTH_SHORT).show()
+}
+
+private fun formatAnswerAsText(
+    paperTitle: String,
+    sections: List<AnswerSection>,
+): String {
+    val builder = StringBuilder()
+    builder.appendLine(paperTitle)
+    builder.appendLine()
+    sections.forEach { section ->
+        builder.appendLine(section.title)
+        builder.appendLine()
+        section.questions.forEach { question ->
+            builder.append(question.order).append(". ")
+            builder.appendLine(formatQuestionShareAnswer(section, question))
+        }
+        builder.appendLine()
+    }
+    return builder.toString().trimEnd()
+}
+
+private fun shareAnswerImage(
+    context: Context,
+    paperTitle: String,
+    sections: List<AnswerSection>,
+) {
+    try {
+        val bitmap = renderAnswerImage(paperTitle, sections)
+        val fileName = "Eklose_Answer_${System.currentTimeMillis()}.png"
+        val resolver = context.contentResolver
+        val contentValues = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Eklose")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+        if (uri == null) {
+            bitmap.recycle()
+            Toast.makeText(context, "保存失败", Toast.LENGTH_SHORT).show()
+            return
+        }
+        resolver.openOutputStream(uri).use { output ->
+            if (output == null || !bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                bitmap.recycle()
+                Toast.makeText(context, "保存失败", Toast.LENGTH_SHORT).show()
+                return
+            }
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            resolver.update(
+                uri,
+                ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) },
+                null,
+                null,
+            )
+        }
+        bitmap.recycle()
+        Toast.makeText(context, "已保存到图片/Eklose", Toast.LENGTH_SHORT).show()
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "image/png"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_TEXT, paperTitle)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        }
+        try {
+            context.startActivity(Intent.createChooser(shareIntent, "分享图片"))
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(context, "没有可用的分享应用", Toast.LENGTH_SHORT).show()
+        }
+    } catch (error: Exception) {
+        Log.e("EkloseShareImage", "Share image failed", error)
+        Toast.makeText(context, "分享图片失败", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun renderAnswerImage(
+    paperTitle: String,
+    sections: List<AnswerSection>,
+): Bitmap {
+    val width = 1080
+    val padding = 60
+    val contentWidth = width - padding * 2
+    val lineSpacing = 16f
+    val sectionGap = 32f
+    val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 48f
+        typeface = Typeface.DEFAULT_BOLD
+        color = AndroidColor.parseColor("#222222")
+    }
+    val sectionPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 36f
+        typeface = Typeface.DEFAULT_BOLD
+        color = AndroidColor.parseColor("#007AFF")
+    }
+    val answerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 30f
+        color = AndroidColor.parseColor("#333333")
+    }
+    val footerPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = 24f
+        color = AndroidColor.parseColor("#999999")
+    }
+
+    fun layoutHeight(text: String, paint: TextPaint): Int {
+        return StaticLayout.Builder.obtain(text, 0, text.length, paint, contentWidth)
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .setLineSpacing(lineSpacing, 1f)
+            .build()
+            .height
+    }
+
+    var totalHeight = padding
+    totalHeight += layoutHeight(paperTitle, titlePaint) + sectionGap.toInt()
+    sections.forEach { section ->
+        totalHeight += layoutHeight(section.title, sectionPaint) + lineSpacing.toInt()
+        section.questions.forEach { question ->
+            totalHeight += layoutHeight("${question.order}. ${formatQuestionShareAnswer(section, question)}", answerPaint) +
+                lineSpacing.toInt()
+        }
+        totalHeight += sectionGap.toInt()
+    }
+    totalHeight += layoutHeight("Generated by Eklose", footerPaint) + padding
+
+    val bitmap = Bitmap.createBitmap(width, totalHeight.coerceAtLeast(width), Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(AndroidColor.WHITE)
+    var y = padding.toFloat()
+
+    fun drawTextLayout(
+        text: String,
+        paint: TextPaint,
+        alignment: Layout.Alignment = Layout.Alignment.ALIGN_NORMAL,
+    ) {
+        val layout = StaticLayout.Builder.obtain(text, 0, text.length, paint, contentWidth)
+            .setAlignment(alignment)
+            .setLineSpacing(lineSpacing, 1f)
+            .build()
+        canvas.save()
+        canvas.translate(padding.toFloat(), y)
+        layout.draw(canvas)
+        canvas.restore()
+        y += layout.height
+    }
+
+    drawTextLayout(paperTitle, titlePaint, Layout.Alignment.ALIGN_CENTER)
+    y += sectionGap
+    sections.forEach { section ->
+        drawTextLayout(section.title, sectionPaint)
+        y += lineSpacing
+        section.questions.forEach { question ->
+            drawTextLayout("${question.order}. ${formatQuestionShareAnswer(section, question)}", answerPaint)
+            y += lineSpacing
+        }
+        y += sectionGap - lineSpacing
+    }
+    drawTextLayout("Generated by Eklose", footerPaint, Layout.Alignment.ALIGN_CENTER)
+    return bitmap
+}
+
+private fun cleanShareText(value: String): String {
+    return value.lines()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .joinToString("\n")
+}
+
+private fun formatQuestionShareAnswer(
+    section: AnswerSection,
+    question: AnswerQuestion,
+): String {
+    val answers = splitAnswerCandidates(question.answer)
+    val takeCount = if (section.isLongSentenceShareSection()) 1 else 2
+    return answers.take(takeCount).joinToString("\n").ifBlank { cleanShareText(question.answer) }
+}
+
+private fun splitAnswerCandidates(value: String): List<String> {
+    val cleaned = cleanShareText(value)
+    if (cleaned.isBlank()) return emptyList()
+    return cleaned.lines()
+        .flatMap { line ->
+            line.split(Regex("""\s*(?:[;；]|(?:\s*/\s*)|(?:\s*\|\s*))\s*"""))
+        }
+        .map { item ->
+            item.replace(Regex("""^(?:标准答案|参考答案|答案|Answer)\s*[:：]\s*"""), "")
+                .trim()
+        }
+        .filter(String::isNotEmpty)
+}
+
+private fun AnswerSection.isLongSentenceShareSection(): Boolean {
+    val marker = listOf(title, category, originalText).joinToString(" ")
+    return marker.contains("转述") ||
+        marker.contains("复述") ||
+        marker.contains("retell", ignoreCase = true) ||
+        marker.contains("retelling", ignoreCase = true) ||
+        marker.contains("topic", ignoreCase = true)
 }
 
 private data class SelectedAnswer(
