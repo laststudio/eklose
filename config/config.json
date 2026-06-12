@@ -1,0 +1,11 @@
+{
+  "isForce": false,
+  "isKillSwitchOn": false,
+  "noticeMessage": "Eklose 远程公告已启用。",
+  "announcementTitle": "公告",
+  "announcementMessage": "云端读取前请确认没有正在进行考试、练习、录音或提交。",
+  "announcementUpdatedAt": "2026-06-11",
+  "announcementUrl": "",
+  "changelogTitle": "更新日志",
+  "changelogSummary": "新增远程管理、更新提醒和公告入口；公告与更新页已改为独立页面展示。"
+}

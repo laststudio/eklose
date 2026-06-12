@@ -2,6 +2,7 @@ package com.shauiqiu.eklose
 
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -18,11 +19,13 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
@@ -48,6 +51,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.FloatingToolbar
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
@@ -58,12 +62,14 @@ import top.yukonga.miuix.kmp.basic.PullToRefresh
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.rememberPullToRefreshState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.Check
 import top.yukonga.miuix.kmp.icon.basic.Search
 import top.yukonga.miuix.kmp.icon.extended.Delete
 import top.yukonga.miuix.kmp.icon.extended.Settings
+import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.OverlayDropdownPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -136,12 +142,22 @@ private enum class HomeworkScope(
     ),
 }
 
+private data class RemoteDialogState(
+    val title: String,
+    val summary: String,
+    val updateUrl: String = "",
+    val locked: Boolean = false,
+    val primaryActionText: String = "确定",
+)
+
 @Composable
 private fun EkloseApp(openHomeRequest: Long = 0L) {
     var selectedPage by rememberSaveable { mutableStateOf(RootPage.Home) }
     var selectedHomeworkScopeIndex by rememberSaveable { mutableStateOf(0) }
     var readerSummary by rememberSaveable { mutableStateOf<String?>(null) }
     var isReading by rememberSaveable { mutableStateOf(false) }
+    var remoteStatus by remember { mutableStateOf(EkloseApplication.remoteStatus ?: EkloseRemoteConfigManager.cachedStatus) }
+    var remoteDialog by remember { mutableStateOf<RemoteDialogState?>(null) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val selectedHomeworkScope = HomeworkScope.entries[selectedHomeworkScopeIndex]
@@ -150,6 +166,20 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
 
     LaunchedEffect(Unit) {
         EkwingAnswerCacheStore.restore(context)
+    }
+
+    LaunchedEffect(Unit) {
+        EkloseApplication.remoteStatusFlow.collect { status ->
+            remoteStatus = status
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        EkloseApplication.updateStatusFlow.collect { status ->
+            if (status != null && status.showUpdateDialog) {
+                remoteDialog = status.toUpdateDialog()
+            }
+        }
     }
 
     LaunchedEffect(openHomeRequest) {
@@ -219,7 +249,9 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
                 label = "RootPageTransition",
             ) { page ->
                 when (page) {
-                    RootPage.Home -> HomePage()
+                    RootPage.Home -> HomePage(
+                        remoteStatus = remoteStatus,
+                    )
                     RootPage.Reader -> ReaderPage(
                         homeworkScope = selectedHomeworkScope,
                         readerSummary = readerSummary,
@@ -258,8 +290,98 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
                 }
             }
         }
+        RemoteManagementDialog(
+            dialog = remoteDialog,
+            onDismiss = { if (remoteDialog?.locked != true) remoteDialog = null },
+            onOpenUrl = { url ->
+                if (url.isNotBlank()) {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                }
+            },
+        )
     }
 }
+
+@Composable
+private fun RemoteManagementDialog(
+    dialog: RemoteDialogState?,
+    onDismiss: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+) {
+    OverlayDialog(
+        show = dialog != null,
+        title = dialog?.title,
+        summary = dialog?.summary,
+        onDismissRequest = if (dialog?.locked == true) null else onDismiss,
+    ) {
+        if (dialog != null) {
+            if (dialog.updateUrl.isNotBlank()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    if (!dialog.locked) {
+                        TextButton(
+                            text = "稍后",
+                            onClick = onDismiss,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Spacer(modifier = Modifier.width(20.dp))
+                    }
+                    TextButton(
+                        text = dialog.primaryActionText,
+                        onClick = {
+                            onOpenUrl(dialog.updateUrl)
+                            if (!dialog.locked) onDismiss()
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.textButtonColors(
+                            color = MiuixTheme.colorScheme.primary,
+                            textColor = MiuixTheme.colorScheme.onPrimary,
+                        ),
+                    )
+                }
+            } else if (!dialog.locked) {
+                TextButton(
+                    text = dialog.primaryActionText,
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.textButtonColors(
+                        color = MiuixTheme.colorScheme.primary,
+                        textColor = MiuixTheme.colorScheme.onPrimary,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+private fun EkloseRemoteStatus.toStartupDialog(): RemoteDialogState? {
+    return when {
+        isKillSwitch -> RemoteDialogState(
+            title = "远程管理",
+            summary = message.ifBlank { "程序异常，请等待远程恢复。" },
+            locked = true,
+        )
+        showUpdateDialog -> RemoteDialogState(
+            title = if (isForce) "需要更新" else "发现新版本",
+            summary = message.ifBlank { "发现新版本，请更新后继续使用。" },
+            updateUrl = updateUrl,
+            locked = isForce,
+            primaryActionText = "立即更新",
+        )
+        else -> null
+    }
+}
+
+private fun EkloseRemoteStatus.toUpdateDialog(): RemoteDialogState = toStartupDialog()
+    ?: RemoteDialogState(
+        title = if (isForce) "需要更新" else "发现新版本",
+        summary = message.ifBlank { "发现新版本，请更新后继续使用。" },
+        updateUrl = updateUrl,
+        locked = isForce,
+        primaryActionText = "立即更新",
+    )
 
 @Composable
 private fun ReaderFloatingToolbar(
@@ -289,10 +411,18 @@ private fun ReaderFloatingToolbar(
 }
 
 @Composable
-private fun HomePage() {
+private fun HomePage(
+    remoteStatus: EkloseRemoteStatus?,
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var loginSession by remember { mutableStateOf(EkwingLoginStore.loadSession(context)) }
+    val announcementTitle = remoteStatus?.announcementTitle?.takeIf { it.isNotBlank() } ?: "公告"
+    val announcementSummary = remoteStatus?.announcementMessage?.takeIf { it.isNotBlank() }
+        ?: "云端读取前请确认没有正在进行考试、练习、录音或提交。"
+    val changelogTitle = remoteStatus?.changelogTitle?.takeIf { it.isNotBlank() } ?: "更新日志"
+    val changelogSummary = remoteStatus?.changelogSummary?.takeIf { it.isNotBlank() }
+        ?: "新增读取页考试来源切换与试卷列表预览。"
 
     DisposableEffect(lifecycleOwner, context) {
         val observer = LifecycleEventObserver { _, event ->
@@ -337,16 +467,19 @@ private fun HomePage() {
         item {
             GroupSection(title = "公告与更新") {
                 GroupItem(
-                    title = "公告",
-                    summary = "云端读取前请确认没有正在进行考试、练习、录音或提交。",
-                    onClick = { context.startActivity(Intent(context, AnnouncementActivity::class.java)) },
-                    showArrow = false,
+                    title = announcementTitle,
+                    summary = announcementSummary,
+                    onClick = {
+                        context.startActivity(AnnouncementActivity.createIntent(context, remoteStatus))
+                    },
                 )
                 GroupDivider()
                 GroupItem(
-                    title = "更新日志",
-                    summary = "新增读取页考试来源切换与试卷列表预览。",
-                    onClick = { context.startActivity(Intent(context, AnnouncementActivity::class.java)) },
+                    title = changelogTitle,
+                    summary = changelogSummary,
+                    onClick = {
+                        context.startActivity(AnnouncementActivity.createIntent(context, remoteStatus))
+                    },
                 )
             }
         }
