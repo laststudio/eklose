@@ -14,9 +14,11 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -44,7 +46,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.painterResource
 import com.shauiqiu.eklose.ui.theme.EkloseTheme
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -158,6 +162,7 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
     var isReading by rememberSaveable { mutableStateOf(false) }
     var remoteStatus by remember { mutableStateOf(EkloseApplication.remoteStatus ?: EkloseRemoteConfigManager.cachedStatus) }
     var remoteDialog by remember { mutableStateOf<RemoteDialogState?>(null) }
+    var showAboutDialog by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val selectedHomeworkScope = HomeworkScope.entries[selectedHomeworkScopeIndex]
@@ -251,6 +256,7 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
                 when (page) {
                     RootPage.Home -> HomePage(
                         remoteStatus = remoteStatus,
+                        onShowAbout = { showAboutDialog = true },
                     )
                     RootPage.Reader -> ReaderPage(
                         homeworkScope = selectedHomeworkScope,
@@ -298,6 +304,14 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
                     context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                 }
             },
+        )
+        AboutDialog(
+            show = showAboutDialog,
+            onDismiss = { showAboutDialog = false },
+            onOpenUrl = { url ->
+                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+            },
+            versionName = context.currentVersionName(),
         )
     }
 }
@@ -413,6 +427,7 @@ private fun ReaderFloatingToolbar(
 @Composable
 private fun HomePage(
     remoteStatus: EkloseRemoteStatus?,
+    onShowAbout: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -483,7 +498,128 @@ private fun HomePage(
                 )
             }
         }
+        item {
+            GroupSection(title = "其他") {
+                GroupItem(
+                    title = "关于翼课校长",
+                    summary = "应用信息、官网与致谢",
+                    onClick = onShowAbout,
+                )
+            }
+        }
     }
+}
+
+@Composable
+private fun AboutDialog(
+    show: Boolean,
+    onDismiss: () -> Unit,
+    onOpenUrl: (String) -> Unit,
+    versionName: String,
+) {
+    OverlayDialog(
+        show = show,
+        title = "关于翼课校长",
+        summary = "翼课学习中心答案读取工具",
+        onDismissRequest = onDismiss,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            AboutInfoBlock(
+                title = "软件信息",
+                imageResId = R.drawable.app_icon,
+                imageDescription = "应用图标",
+                lines = listOf(
+                    "翼课校长",
+                    "版本: ${versionName.ifBlank { "未知" }}",
+                    "开源协议: GPL 3.0",
+                ),
+            )
+            AboutInfoBlock(
+                title = "关于作者",
+                imageResId = R.drawable.ic_author,
+                imageDescription = "作者头像",
+                lines = listOf(
+                    "帅丘",
+                ),
+            )
+            GroupSection {
+                GroupItem(
+                    title = "开源地址",
+                    summary = "查看项目仓库",
+                    onClick = { onOpenUrl("https://github.com/qiuqiqiuqid/eklose") },
+                )
+                GroupDivider()
+                GroupItem(
+                    title = "访问官网",
+                    summary = "lastudio.cc",
+                    onClick = { onOpenUrl("https://lastudio.cc") },
+                )
+            }
+            TextButton(
+                text = "关闭",
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.textButtonColors(
+                    color = MiuixTheme.colorScheme.primary,
+                    textColor = MiuixTheme.colorScheme.onPrimary,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
+private fun AboutInfoBlock(
+    title: String,
+    imageResId: Int,
+    imageDescription: String,
+    lines: List<String>,
+) {
+    GroupSection(title = title) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MiuixTheme.colorScheme.surface,
+                shadowElevation = 0.dp,
+            ) {
+                Image(
+                    painter = painterResource(id = imageResId),
+                    contentDescription = imageDescription,
+                    modifier = Modifier.size(52.dp),
+                )
+            }
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                lines.forEachIndexed { index, line ->
+                    Text(
+                        text = line,
+                        style = if (index == 0) MiuixTheme.textStyles.body1 else MiuixTheme.textStyles.body2,
+                        fontWeight = if (index == 0) FontWeight.Bold else FontWeight.Normal,
+                        color = if (index == 0) {
+                            MiuixTheme.colorScheme.onSurfaceContainer
+                        } else {
+                            MiuixTheme.colorScheme.onSurfaceVariantSummary
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun Context.currentVersionName(): String {
+    return packageManager.getPackageInfo(packageName, 0).versionName ?: ""
 }
 
 @Composable

@@ -133,7 +133,7 @@ private data class AnswerQuestion(
     val answer: String,
 )
 
-private const val SHARE_FOOTER_TEXT = "eklose守护你的答案喵~ 官网:lastudio.cc"
+private const val SHARE_FOOTER_TEXT = "翼课校长守护你的答案喵~ 官网:lastudio.cc"
 
 private val loadingAnswerSections = listOf(
     AnswerSection(
@@ -360,12 +360,12 @@ private fun shareAnswerImage(
 ) {
     try {
         val bitmap = renderAnswerImage(paperTitle, sections)
-        val fileName = "Eklose_Answer_${System.currentTimeMillis()}.png"
+        val fileName = "YikePrincipal_Answer_${System.currentTimeMillis()}.png"
         val resolver = context.contentResolver
         val contentValues = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Eklose")
+            put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/翼课校长")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
@@ -392,7 +392,7 @@ private fun shareAnswerImage(
             )
         }
         bitmap.recycle()
-        Toast.makeText(context, "已保存到图片/Eklose", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "已保存到图片/翼课校长", Toast.LENGTH_SHORT).show()
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "image/png"
             putExtra(Intent.EXTRA_STREAM, uri)

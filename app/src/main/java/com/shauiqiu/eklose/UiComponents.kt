@@ -36,7 +36,7 @@ fun EkloseTopBar(
     actions: @Composable RowScope.() -> Unit = {},
 ) {
     SmallTopAppBar(
-        title = "Eklose",
+        title = "翼课校长",
         color = MiuixTheme.colorScheme.surface,
         titleColor = MiuixTheme.colorScheme.onSurface,
         navigationIcon = {
