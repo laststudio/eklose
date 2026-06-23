@@ -37,6 +37,11 @@ class EkloseApplication : Application() {
                             System.exit(0)
                         }, 2000)
                     }
+                    status.requiresVerification -> {
+                        updateStatus = status
+                        _updateStatusFlow.value = status
+                        Log.i(TAG, "需要验证码")
+                    }
                     status.showUpdateDialog -> {
                         updateStatus = status
                         _updateStatusFlow.value = status

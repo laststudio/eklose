@@ -269,7 +269,7 @@ private fun LoginScreen(
                                                     password = password,
                                                 )
                                                 LoginMode.RealName -> client.loginByRealName(
-                                                    name = name.trim(),
+                                                    name = EkwingLoginStore.resolveRealName(context, name),
                                                     password = password,
                                                     schoolName = schoolName.trim(),
                                                     schoolId = schoolId.trim(),

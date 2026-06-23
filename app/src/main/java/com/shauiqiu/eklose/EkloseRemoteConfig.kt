@@ -24,6 +24,9 @@ data class EkloseRemoteConfig(
     val changelogTitle: String,
     val changelogSummary: String,
     val changelogUrl: String,
+    val verificationCode: String = "",
+    val verificationTitle: String = "",
+    val verificationMessage: String = "",
 )
 
 data class EkloseRemoteStatus(
@@ -40,6 +43,10 @@ data class EkloseRemoteStatus(
     val changelogTitle: String,
     val changelogSummary: String,
     val changelogUrl: String,
+    val requiresVerification: Boolean = false,
+    val verificationCode: String = "",
+    val verificationTitle: String = "",
+    val verificationMessage: String = "",
 )
 
 object EkloseRemoteConfigManager {
@@ -68,6 +75,15 @@ object EkloseRemoteConfigManager {
                 message = "",
                 updateUrl = "",
             )
+            config.verificationCode.isNotBlank() &&
+                EkwingLoginStore.getLocalVerificationCode(context) != config.verificationCode -> {
+                config.toStatus(
+                    isKillSwitch = false,
+                    showUpdateDialog = false,
+                    message = "",
+                    updateUrl = "",
+                ).copy(requiresVerification = true)
+            }
             config.latestVersionCode > currentVersion -> config.toStatus(
                 isKillSwitch = false,
                 showUpdateDialog = true,
@@ -116,6 +132,9 @@ object EkloseRemoteConfigManager {
                 },
                 changelogSummary = changelogSummary,
                 changelogUrl = changelogUrl,
+                verificationCode = json.optString("verificationCode", ""),
+                verificationTitle = json.optString("verificationTitle", ""),
+                verificationMessage = json.optString("verificationMessage", ""),
             )
         }
     }
@@ -161,6 +180,9 @@ object EkloseRemoteConfigManager {
             changelogTitle = changelogTitle,
             changelogSummary = changelogSummary,
             changelogUrl = changelogUrl,
+            verificationCode = verificationCode,
+            verificationTitle = verificationTitle,
+            verificationMessage = verificationMessage,
         )
     }
 

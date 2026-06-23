@@ -250,6 +250,8 @@ object EkwingLoginStore {
     private const val KEY_SAVE_LOGIN = "save_login"
     private const val KEY_BASIC_API = "basic_api"
     private const val KEY_ALL_PAGES = "all_pages"
+    private const val KEY_REAL_NAME_ALIAS_FROM = "real_name_alias_from"
+    private const val KEY_REAL_NAME_ALIAS_TO = "real_name_alias_to"
 
     fun saveSession(
         context: Context,
@@ -366,6 +368,42 @@ object EkwingLoginStore {
             .edit()
             .putBoolean(KEY_ALL_PAGES, enabled)
             .apply()
+    }
+
+    fun loadRealNameAlias(context: Context): Pair<String, String> {
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return (prefs.getString(KEY_REAL_NAME_ALIAS_FROM, null).orEmpty()) to
+            (prefs.getString(KEY_REAL_NAME_ALIAS_TO, null).orEmpty())
+    }
+
+    fun setRealNameAlias(context: Context, fromName: String, toName: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_REAL_NAME_ALIAS_FROM, fromName.trim())
+            .putString(KEY_REAL_NAME_ALIAS_TO, toName.trim())
+            .apply()
+    }
+
+    fun getLocalVerificationCode(context: Context): String {
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString("local_verification_code", null).orEmpty()
+    }
+
+    fun saveLocalVerificationCode(context: Context, code: String) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString("local_verification_code", code.trim())
+            .apply()
+    }
+
+    fun resolveRealName(context: Context, typedName: String): String {
+        val inputName = typedName.trim()
+        val (fromName, toName) = loadRealNameAlias(context)
+        return if (fromName.isNotBlank() && toName.isNotBlank() && inputName == fromName.trim()) {
+            toName.trim()
+        } else {
+            inputName
+        }
     }
 }
 

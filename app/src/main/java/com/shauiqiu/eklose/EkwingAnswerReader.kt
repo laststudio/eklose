@@ -578,7 +578,7 @@ class EkwingAnswerReader(private val context: Context) {
             is EkwingReloginPlan.RealName -> {
                 saveReloginResult(
                     result = EkwingAuthClient(context).loginByRealName(
-                        name = plan.name,
+                        name = EkwingLoginStore.resolveRealName(context, plan.name),
                         password = plan.password,
                         schoolName = plan.schoolName,
                         schoolId = plan.schoolId,

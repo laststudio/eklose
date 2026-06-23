@@ -55,6 +55,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.FloatingToolbar
 import top.yukonga.miuix.kmp.basic.Icon
@@ -162,6 +163,7 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
     var isReading by rememberSaveable { mutableStateOf(false) }
     var remoteStatus by remember { mutableStateOf(EkloseApplication.remoteStatus ?: EkloseRemoteConfigManager.cachedStatus) }
     var remoteDialog by remember { mutableStateOf<RemoteDialogState?>(null) }
+    var showVerificationDialog by rememberSaveable { mutableStateOf(false) }
     var showAboutDialog by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -181,8 +183,12 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
 
     LaunchedEffect(Unit) {
         EkloseApplication.updateStatusFlow.collect { status ->
-            if (status != null && status.showUpdateDialog) {
-                remoteDialog = status.toUpdateDialog()
+            if (status != null) {
+                if (status.requiresVerification) {
+                    showVerificationDialog = true
+                } else if (status.showUpdateDialog) {
+                    remoteDialog = status.toUpdateDialog()
+                }
             }
         }
     }
@@ -313,6 +319,18 @@ private fun EkloseApp(openHomeRequest: Long = 0L) {
             },
             versionName = context.currentVersionName(),
         )
+        VerificationDialog(
+            show = showVerificationDialog,
+            status = remoteStatus,
+            onVerified = {
+                showVerificationDialog = false
+                remoteStatus?.let { status ->
+                    if (status.showUpdateDialog) {
+                        remoteDialog = status.toUpdateDialog()
+                    }
+                }
+            },
+        )
     }
 }
 
@@ -366,6 +384,65 @@ private fun RemoteManagementDialog(
                     ),
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun VerificationDialog(
+    show: Boolean,
+    status: EkloseRemoteStatus?,
+    onVerified: () -> Unit,
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var input by rememberSaveable(show) { mutableStateOf("") }
+    var errorText by rememberSaveable(show) { mutableStateOf("") }
+    OverlayDialog(
+        show = show,
+        title = status?.verificationTitle?.ifBlank { "启动验证" } ?: "启动验证",
+        summary = status?.verificationMessage?.ifBlank { "请输入验证码继续使用。" } ?: "请输入验证码继续使用。",
+        onDismissRequest = null,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            top.yukonga.miuix.kmp.basic.TextField(
+                value = input,
+                onValueChange = {
+                    input = it
+                    errorText = ""
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = "验证码",
+                singleLine = true,
+                cornerRadius = 16.dp,
+                visualTransformation = PasswordVisualTransformation(),
+            )
+            if (errorText.isNotBlank()) {
+                top.yukonga.miuix.kmp.basic.Text(
+                    text = errorText,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                )
+            }
+            TextButton(
+                text = "验证",
+                onClick = {
+                    val code = input.trim()
+                    if (code == status?.verificationCode) {
+                        EkwingLoginStore.saveLocalVerificationCode(context, code)
+                        onVerified()
+                    } else {
+                        errorText = "验证码不正确，请重新输入"
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.textButtonColors(
+                    color = MiuixTheme.colorScheme.primary,
+                    textColor = MiuixTheme.colorScheme.onPrimary,
+                ),
+            )
         }
     }
 }
