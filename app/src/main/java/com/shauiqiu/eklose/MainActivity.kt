@@ -394,19 +394,42 @@ private fun VerificationDialog(
     status: EkloseRemoteStatus?,
     onVerified: () -> Unit,
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    var input by rememberSaveable(show) { mutableStateOf("") }
-    var errorText by rememberSaveable(show) { mutableStateOf("") }
-    OverlayDialog(
-        show = show,
-        title = status?.verificationTitle?.ifBlank { "启动验证" } ?: "启动验证",
-        summary = status?.verificationMessage?.ifBlank { "请输入验证码继续使用。" } ?: "请输入验证码继续使用。",
-        onDismissRequest = null,
+    if (!show) return
+    val context = LocalContext.current
+    var input by rememberSaveable { mutableStateOf("") }
+    var errorText by rememberSaveable { mutableStateOf("") }
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = {},
+        properties = androidx.compose.ui.window.DialogProperties(
+            dismissOnBackPress = false,
+            dismissOnClickOutside = false,
+        ),
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    color = MiuixTheme.colorScheme.background,
+                    shape = androidx.compose.foundation.shape.RoundedCornerShape(28.dp),
+                )
+                .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            top.yukonga.miuix.kmp.basic.Text(
+                text = status?.verificationTitle?.ifBlank { "启动验证" } ?: "启动验证",
+                modifier = Modifier.fillMaxWidth(),
+                fontSize = MiuixTheme.textStyles.title4.fontSize,
+                fontWeight = FontWeight.Medium,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                color = MiuixTheme.colorScheme.onBackground,
+            )
+            top.yukonga.miuix.kmp.basic.Text(
+                text = status?.verificationMessage?.ifBlank { "请输入验证码继续使用。" } ?: "请输入验证码继续使用。",
+                modifier = Modifier.fillMaxWidth(),
+                fontSize = MiuixTheme.textStyles.body1.fontSize,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                color = MiuixTheme.colorScheme.onSurfaceSecondary,
+            )
             top.yukonga.miuix.kmp.basic.TextField(
                 value = input,
                 onValueChange = {
