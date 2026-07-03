@@ -1,1 +1,10 @@
-{}
+{
+    "java.jdt.ls.java.home": "/opt/android-studio/jbr",
+    "java.import.gradle.java.home": "/opt/android-studio/jbr",
+    "terminal.integrated.env.linux": {
+        "JAVA_HOME": "/opt/android-studio/jbr",
+        "ANDROID_HOME": "/home/shuaiqiu/Android/Sdk",
+        "ANDROID_SDK_ROOT": "/home/shuaiqiu/Android/Sdk",
+        "PATH": "${env:PATH}:/opt/android-studio/jbr/bin:/home/shuaiqiu/Android/Sdk/platform-tools"
+    }
+}
