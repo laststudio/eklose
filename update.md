@@ -75,7 +75,7 @@
 - 新增学习中心考试任务读取入口和试卷列表展示。
 
 ### 变更
-- 远程配置复用 Fe_config，使用独立的 `eklose_config.json` 配置文件。
+- 远程配置统一由后端 `api.lastudio.cc/software/eklose/config` 下发。
 - 主页公告与更新入口使用 miuix 风格组件展示。
 
 ### 注意
